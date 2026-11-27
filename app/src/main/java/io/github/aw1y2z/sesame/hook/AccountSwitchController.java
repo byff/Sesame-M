@@ -16,7 +16,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.github.aw1y2z.sesame.data.AccountSwitchConfig;
 import io.github.aw1y2z.sesame.data.task.ModelTask;
-import io.github.aw1y2z.sesame.model.normal.base.BaseModel;
 import io.github.aw1y2z.sesame.util.Log;
 import io.github.aw1y2z.sesame.util.StringUtil;
 import io.github.aw1y2z.sesame.util.TimeUtil;
@@ -68,14 +67,13 @@ public final class AccountSwitchController {
     private static final long STARTUP_SYNC_DELAY_MILLIS = 10_000L;
     /** 进程启动后的冷却时间，期间不切号，避免干扰支付宝自身的启动/登录流程 */
     private static final long STARTUP_SETTLE_MILLIS = 60_000L;
-    /** 两次切号之间的最小间隔，避免任务很快结束时连续调用宿主登录接口 */
-    private static final long MIN_SWITCH_GAP_MILLIS = 60_000L;
     /**
-     * 账号最短驻留时间的兜底下限。
-     * <p>「切号等待间隔」设为 0 时用它兜底：切号会重载配置并重跑一轮，
-     * 若允许「跑完就切」，账号会每分钟来回切一次，支付宝反复切换登录态容易被风控。
+     * 两次切号之间的最小间隔：防止「一轮跑完就切」切得过快。
+     * <p>切号会重载账号配置、重新登录支付宝并再跑一轮，
+     * 间隔太短会让支付宝反复切换登录态，容易触发风控；
+     * 同时也保证新旧账号的登录态有足够时间稳定下来。
      */
-    private static final long MIN_RESIDENT_MILLIS = 10 * 60_000L;
+    private static final long MIN_SWITCH_GAP_MILLIS = 3 * 60_000L;
     /**
      * 切号前等待旧账号任务真正退出的超时。
      * <p>不等待就会让旧账号的收尾动作与新账号的任务重叠（两个账号同时处理同一个任务）。
@@ -419,52 +417,41 @@ public final class AccountSwitchController {
             if (lastSwitchEndAt > 0 && now - lastSwitchEndAt < MIN_SWITCH_GAP_MILLIS) {
                 return;
             }
+            /*
+             * 切号条件：
+             *   1) 当前账号这一轮的所有模块任务已经全部跑完（主条件）；
+             *   2) 「切号等待间隔」> 0 时，还要满足驻留时长下限（可选，用户没要求时为 0）。
+             *
+             * 语义：「一个账号把所有操作做完 → 切到下一个账号 → 下一个做完 → 切回预设账号」。
+             *
+             * 「切号等待间隔」现在是**可选的驻留下限**：
+             *   - 0（默认）：这一轮跑完就切，完全按用户期望的节奏走；
+             *   - > 0：跑完之后还要在这个账号上至少待这么久才切，用于控制切号频率。
+             *
+             * 防连击靠的是 MIN_SWITCH_GAP_MILLIS（两次切号之间的硬性最小间隔），
+             * 不再拿「执行间隔」兜底 —— 那会让账号白等一整个周期。
+             */
             long intervalMillis = config.getAccountSwitchIntervalMinutes() * 60_000L;
-            if (intervalMillis <= 0) {
+            if (intervalMillis > 0) {
                 /*
-                 * 「切号等待间隔 = 0」原本表示「任务一跑完就切」，但那会让账号每分钟来回切一次：
-                 * 切号会重载账号配置并重新排一轮任务，跑完又立刻满足切号条件，
-                 * 于是形成「切号 → 跑一轮 → 切号」的紧循环，
-                 * 支付宝的登录态反复切换，而用户的「执行间隔」完全失效。
-                 *
-                 * 现在「切号等待间隔」= 每个账号的**最短驻留时长**。
-                 * 设为 0 时回落到「一个执行周期」：每个账号至少跑完一整个执行周期再切，
-                 * 与「一个账号把所有操作做完后再切换」的直觉一致。
+                 * residentSince 理论上由 onAccountSwitched / onRunResumed 写入。
+                 * 但两处都要能拿到登录账号才写得上，启动早期或读不到账号时它一直是 0，
+                 * 于是 residentMillis 恒为 0，驻留条件永远不满足 → 永不切号。
+                 * 这里用运行起点兜底，保证「至少待了这么久」这个语义始终成立。
                  */
-                intervalMillis = Math.max(BaseModel.getCheckInterval().getValue(), MIN_RESIDENT_MILLIS);
-            }
-            /*
-             * 切号条件（两个都要满足）：
-             *   1) 当前账号的驻留时长 ≥ 切号等待间隔（从切入该账号的时刻算起）；
-             *   2) 当前这一轮任务已经全部跑完。
-             *
-             * 原实现只看「任务跑完 + 从跑完那刻起算的间隔」，间隔为 0 时任务一跑完就切。
-             * 而切号后又会立即重跑一轮（initialize(uid, true)），于是形成
-             * 「切号 → 跑一轮 → 切号」的紧循环：支付宝每分钟来回切一次账号，
-             * 用户的「执行间隔(50分钟)」形同虚设。
-             *
-             * 改成以「驻留时长」为准后，切号间隔真正变成「每个账号至少待多久」，
-             * 不管期间跑了几轮任务；第 2 条则保证切号一定发生在两轮任务之间，
-             * 不会出现两个账号的任务交叠。
-             */
-            /*
-             * residentSince 理论上由 onAccountSwitched / onRunResumed 写入。
-             * 但两处都要能拿到登录账号才写得上，启动早期或读不到账号时它一直是 0，
-             * 于是 residentMillis 恒为 0，驻留条件永远不满足 → 永不切号。
-             * 这里用运行起点兜底，保证「至少待了这么久」这个语义始终成立。
-             */
-            long residentBase = residentSince > 0 ? residentSince : runStartTime;
-            long residentMillis = residentBase > 0 ? now - residentBase : 0;
-            if (residentMillis < intervalMillis) {
-                // 驻留时间还不够，任务虽已跑完也先不切
-                if (!intervalWaitLogged) {
-                    intervalWaitLogged = true;
-                    long remainMinutes = (intervalMillis - residentMillis + 59_999L) / 60_000L;
-                    Log.record("自动切号🔄️ 当前账号任务已全部完成，" + label(currentHost.currentUid())
-                            + " 已驻留 " + (residentMillis / 60_000L) + " 分钟，"
-                            + "距离切号间隔还需 " + remainMinutes + " 分钟，等待中");
+                long residentBase = residentSince > 0 ? residentSince : runStartTime;
+                long residentMillis = residentBase > 0 ? now - residentBase : 0;
+                if (residentMillis < intervalMillis) {
+                    // 驻留时间还不够，任务虽已跑完也先不切
+                    if (!intervalWaitLogged) {
+                        intervalWaitLogged = true;
+                        long remainMinutes = (intervalMillis - residentMillis + 59_999L) / 60_000L;
+                        Log.record("自动切号🔄️ 当前账号任务已全部完成，" + label(currentHost.currentUid())
+                                + " 已驻留 " + (residentMillis / 60_000L) + " 分钟，"
+                                + "距离切号间隔还需 " + remainMinutes + " 分钟，等待中");
+                    }
+                    return;
                 }
-                return;
             }
             intervalWaitLogged = false;
             switching = true;
