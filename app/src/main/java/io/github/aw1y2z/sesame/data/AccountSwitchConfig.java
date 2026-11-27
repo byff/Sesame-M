@@ -18,7 +18,7 @@ import io.github.aw1y2z.sesame.util.StringUtil;
  * 该文件不区分账号，模块 App 与支付宝注入进程共用同一份：
  * accountSwitchEnabled              是否开启自动切换登录账号
  * accountSwitchIntervalMinutes      切号等待间隔(分钟，每个账号的最短停留时长；0=按一个执行周期)
- * accountSwitchRoundIntervalMinutes 切号轮次间隔(分钟，0=不等待)
+ * accountSwitchRoundIntervalMinutes 切号轮次间隔(分钟，0=按执行间隔)
  * accountSwitchAccounts             账号列表，顺序即切号顺序，循环执行
  * accountSwitchFinalAccountUid      常态保持账号(一轮走完后切入该账号，本轮跑完再等轮次间隔)
  * accountSwitchScheduleTimes        切换账号定时执行时间点，如 ["0800","2000"]

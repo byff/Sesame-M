@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.github.aw1y2z.sesame.data.AccountSwitchConfig;
 import io.github.aw1y2z.sesame.data.task.ModelTask;
+import io.github.aw1y2z.sesame.model.normal.base.BaseModel;
 import io.github.aw1y2z.sesame.util.Log;
 import io.github.aw1y2z.sesame.util.StringUtil;
 import io.github.aw1y2z.sesame.util.TimeUtil;
@@ -339,8 +340,12 @@ public final class AccountSwitchController {
                 if (now >= resumeAt) {
                     String pendingUid = pendingSwitchUid;
                     if (!ModelTask.isAllTaskFinished()) {
-                        // 保持账号还在按自己的执行间隔跑任务，等这一轮跑完再切号，避免中途打断
-                        resumeAt = now + SWITCH_POLL_INTERVAL_MILLIS;
+                        /*
+                         * 保持账号还在按自己的执行间隔跑任务，等这一轮跑完再切号，避免中途打断。
+                         * <p>注意不要把 resumeAt 往后推：resumeAt 是「等待结束的时刻」，
+                         * 推它就等于把轮次间隔无限延长，等待永远等不到头。
+                         * 这里只挪动「下次检查的时刻」，用单独变量记。
+                         */
                         return;
                     }
                     pendingSwitchUid = null;
@@ -554,7 +559,22 @@ public final class AccountSwitchController {
             int anchorIndex = indexOf(effective, roundAnchorUid);
             if (anchorIndex < 0
                     || StringUtil.isEmpty(resolveLoginId(effective.get(anchorIndex), hostMap))) {
-                roundAnchorUid = firstAvailableUid(effective, hostMap);
+                /*
+                 * 锚点无效（还没起算，或原锚点账号登录记录被清掉了）：重新起算一轮。
+                 * <p>优先取**当前账号**而不是列表第一个：
+                 * 启动时若正好坐在常态保持账号（列表末尾），按列表第一个起算的话，
+                 * 第一次切号就绕回锚点 → 一轮还没走完就开始等轮次间隔，
+                 * 其余账号被白白推迟一个间隔。
+                 */
+                String newAnchor = null;
+                if (currentIndex >= 0
+                        && !StringUtil.isEmpty(resolveLoginId(effective.get(currentIndex), hostMap))) {
+                    newAnchor = effective.get(currentIndex).getUid();
+                }
+                if (StringUtil.isEmpty(newAnchor)) {
+                    newAnchor = firstAvailableUid(effective, hostMap);
+                }
+                roundAnchorUid = newAnchor;
                 anchorIndex = indexOf(effective, roundAnchorUid);
             }
             // 目标起点：当前账号之后的下一个账号
@@ -631,9 +651,17 @@ public final class AccountSwitchController {
              * 轮次等待：本轮所有账号都执行完之后，等「轮次间隔」再开始下一轮。
              * <p>计时起点是「本轮走完的那一刻」，不是切入第一个账号时 ——
              * 否则各账号自己跑任务的时间会被白白吃掉，轮次间隔形同虚设。
+             *
+             * <p>轮次间隔为 0 时回落到「执行间隔」（基础设置里的执行间隔，默认 50 分钟）：
+             * 一轮走完就该歇一会儿再开始下一轮，否则只剩两次切号之间的硬性最小间隔（3 分钟），
+             * 表现就是「切号 → 跑一轮 → 切号」的三分钟无限循环。
              */
             long roundIntervalMinutes = config.getAccountSwitchRoundIntervalMinutes();
-            if (roundEnd && roundIntervalMinutes > 0) {
+            if (roundIntervalMinutes <= 0) {
+                // checkInterval 的值是毫秒（MultiplyIntegerModelField 带 60000 倍率），换算成分钟
+                roundIntervalMinutes = Math.max(BaseModel.getCheckInterval().getValue() / 60_000L, 1L);
+            }
+            if (roundEnd) {
                 // 本轮刚走完：记下这个时刻作为轮次间隔的计时起点
                 if (roundFinishedAt <= 0) {
                     roundFinishedAt = System.currentTimeMillis();
@@ -812,7 +840,23 @@ public final class AccountSwitchController {
                     } catch (Throwable t) {
                         Log.printStackTrace(TAG + "#恢复任务失败", t);
                     }
-                    nextAttemptAt = System.currentTimeMillis() + failedRetryMillis();
+                    /*
+                     * 失败后不能就这么算了：轮次等待已经结束、resumeAt 也过期了，
+                     * 若只恢复运行就再也没人触发这次切换，下一轮会被整个跳过。
+                     * 这里把等待重新排上，等 failedRetryMillis 后再试一次。
+                     *
+                     * pendingSwitchUid 在进入 resumeSwitch 前被清空了，
+                     * 这里从 roundAnchorUid 还原 —— 它就是这一轮要切过去的账号。
+                     */
+                    long retryDelay = failedRetryMillis();
+                    awaitingResume = true;
+                    resumeAt = System.currentTimeMillis() + retryDelay;
+                    roundWaitLastLogAt = System.currentTimeMillis();
+                    if (StringUtil.isEmpty(pendingSwitchUid)) {
+                        pendingSwitchUid = roundAnchorUid;
+                    }
+                    Log.record("自动切号🔄️ 轮次切号失败，" + (retryDelay / 60_000L)
+                            + " 分钟后重试");
                 }
             }
             if (stoppedTasks) {

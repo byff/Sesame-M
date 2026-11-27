@@ -71,13 +71,13 @@ public class BaseModel extends Model {
             new AccountSwitchIntervalModelField("accountSwitchIntervalMinutes",
                     "切号等待间隔(分钟,0跑完就切)", 0, 0, 24 * 60,
                     AccountSwitchIntervalModelField.KIND_SWITCH)
-                    .setDescription("当前账号这一轮所有模块操作完成后，再等这么久才切到下一个账号；0 表示跑完立即切换");
+                    .setDescription("当前账号这一轮所有模块操作完成后，再等这么久才切到下一个账号；0 表示跑完立即切换（轮次节奏由「切号轮次间隔」控制）");
     @Getter
     private static final AccountSwitchIntervalModelField accountSwitchRoundIntervalMinutes =
             new AccountSwitchIntervalModelField("accountSwitchRoundIntervalMinutes",
-                    "切号轮次间隔(分钟,0不等待)", 0, 0, 24 * 60,
+                    "切号轮次间隔(分钟,0按执行间隔)", 0, 0, 24 * 60,
                     AccountSwitchIntervalModelField.KIND_ROUND)
-                    .setDescription("所有账号轮完一圈后，常态保持账号这一轮跑完，再等待这么久才开始下一轮");
+                    .setDescription("所有账号轮流执行完一整轮后，等待这么久才开始下一轮；0 表示按「执行间隔」计算（默认 50 分钟）");
     @Getter
     private static final AccountSwitchListModelField accountSwitchAccounts =
             new AccountSwitchListModelField("accountSwitchAccounts", "账号切换顺序列表", new ArrayList<>())
