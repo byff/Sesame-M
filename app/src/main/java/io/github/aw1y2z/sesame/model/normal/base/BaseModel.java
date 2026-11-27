@@ -85,11 +85,11 @@ public class BaseModel extends Model {
     @Getter
     private static final AccountSwitchFinalAccountModelField accountSwitchFinalAccountUid =
             new AccountSwitchFinalAccountModelField("accountSwitchFinalAccountUid", "常态保持账号(轮完切入)")
-                    .setDescription("一轮账号轮完后切到该账号，等待「切号轮次间隔」再开始下一轮；不选则回到列表第一个账号");
+                    .setDescription("每一轮所有账号轮流执行完后切到该账号作为收尾，等待「切号轮次间隔」再开始下一轮；不选则按列表顺序循环");
     @Getter
     private static final AccountSwitchTimesModelField accountSwitchScheduleTimes =
             new AccountSwitchTimesModelField("accountSwitchScheduleTimes", "切换账号定时执行(如0800,2000)", new ArrayList<>())
-                    .setDescription("到点后立即终止当前账号任务，20 秒后切到常态保持账号执行一轮；支持 HH、HHmm、HHmmss，逗号分隔");
+                    .setDescription("到点后立即终止当前账号任务，20 秒后切到常态保持账号，并把这一轮的所有账号依次执行完；支持 HH、HHmm、HHmmss，逗号分隔");
     // ===== 验证与账号限制（全局配置，值存在 config/config_common.json，不随账号走）=====
     @Getter
     private static final FeatureFlagBooleanModelField autoSlideCaptchaEnabled =
