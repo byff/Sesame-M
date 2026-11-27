@@ -208,17 +208,22 @@ public class ApplicationHook extends XposedModule {
             new AccountSwitchController.Host() {
                 @Override
                 public String currentUid() {
-                    return getUserId();
+                    // 统一用账号服务：与 initialize/resume 的判定口径一致，
+                    // 否则同一个账号会被两套数据源判成不同而反复重载
+                    return resolveLoggedUid();
                 }
 
                 @Override
                 public boolean isReadyForSwitch() {
-                    return init && !offline && service != null && getUserId() != null;
+                    return init && !offline && service != null && resolveLoggedUid() != null;
                 }
 
                 @Override
                 public boolean initialize(String uid, boolean startMain) {
-                    String current = getUserId();
+                    // 判定用支付宝账号服务（AuthService）而不是社交服务（getUserId）：
+                    // 切号刚生效时社交服务可能还没刷新，两者不一致会被误判成「切号失败」，
+                    // 于是走了 resume() 分支用旧账号的配置继续跑新账号。
+                    String current = resolveLoggedUid();
                     if (!StringUtil.isEmpty(uid) && !uid.equals(current)) {
                         // 实际登录账号还没切过来时不能初始化，否则会把上一个账号的配置加载进内存
                         Log.record("自动切号🔄️ 已登录账号与目标不一致，跳过配置加载: 目标["
@@ -250,7 +255,7 @@ public class ApplicationHook extends XposedModule {
                 @Override
                 public void resume() {
                     offline = false;
-                    String uid = getUserId();
+                    String uid = resolveLoggedUid();
                     // 失败恢复：登录账号与内存配置不一致（切号已生效但初始化失败/登录态抖动）时，
                     // 按实际登录的账号重新加载配置，避免用上一个账号的配置继续跑任务
                     if (!StringUtil.isEmpty(uid) && !uid.equals(UserIdMap.getCurrentUid())) {
@@ -259,13 +264,23 @@ public class ApplicationHook extends XposedModule {
                             return;
                         }
                     }
-                    AccountSwitchController.onAccountRunStarted(uid);
+                    AccountSwitchController.onRunResumed(uid);
                     // pause() 刚停掉主任务时，它的执行槽可能还没被上一代线程归还：
                     // 此时 startTask 会因抢不到槽而放弃，本轮就白跑（下次要等一整个执行间隔）。
                     // startMainTask 内部会重试，等上一代线程退出后再起跑。
                     startMainTask();
                 }
             };
+
+    /**
+     * 当前支付宝真实登录账号：优先用账号服务（AuthService），取不到再退回社交服务。
+     * <p>切号判定必须用这一个数据源：社交服务 {@code getUserId()} 在切号后可能滞后，
+     * 两个数据源混用会把「切号已生效」误判成「切号失败」。
+     */
+    private static String resolveLoggedUid() {
+        String uid = AlipayAccountSwitchBridge.currentUid();
+        return StringUtil.isEmpty(uid) ? getUserId() : uid;
+    }
 
     private static RpcBridge rpcBridge;
 
@@ -423,7 +438,9 @@ public class ApplicationHook extends XposedModule {
                 XHelpers.findAndHookMethod("com.alipay.mobile.quinox.LauncherActivity", classLoader, "onResume", new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
-                        String targetUid = getUserId();
+                        // 用账号服务判定登录账号：切号刚生效时社交服务 getUserId() 还没刷新，
+                        // 用它会误判成「用户已切换」→ 触发整轮重载 → 打断正在进行的切号
+                        String targetUid = resolveLoggedUid();
                         if (targetUid == null) {
                             Log.record("用户未登录");
                             Toast.show("用户未登录");
@@ -451,7 +468,7 @@ public class ApplicationHook extends XposedModule {
                                 }, 1000);
                                 return;
                             }
-                            UserIdMap.initUser(targetUid);
+                            UserIdMap.initUser(resolveLoggedUid());
                         }
                         if (offline) {
                             offline = false;
@@ -600,7 +617,13 @@ public class ApplicationHook extends XposedModule {
                                         return;
                                     }
                                     updateDay();
-                                    String targetUid = getUserId();
+                                    /*
+                                     * 用支付宝账号服务判定登录账号，不用社交服务的 getUserId()：
+                                     * 切号刚生效时社交服务还没刷新，两者会短暂不一致，
+                                     * 于是这里会误判成「用户变了」→ 拉起登录页 + 置 offline，
+                                     * 切号流程被当场打断，账号就在两个之间反复横跳。
+                                     */
+                                    String targetUid = resolveLoggedUid();
                                     String currentUid = UserIdMap.getCurrentUid();
                                     if (targetUid == null || currentUid == null) {
                                         Log.record("用户为空，放弃执行");
@@ -626,7 +649,17 @@ public class ApplicationHook extends XposedModule {
                                         FutureTask<Boolean> checkTask = new FutureTask<>(AntMemberRpcCall::check);
                                         Thread checkThread = new Thread(checkTask);
                                         checkThread.start();
-                                        if (!checkTask.get(CHECK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                                        boolean checkOk;
+                                        try {
+                                            checkOk = checkTask.get(CHECK_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                                        } catch (TimeoutException timeout) {
+                                            /*
+                                             * 超时后必须 cancel：否则这条线程仍在发 RPC，
+                                             * 下一轮 check 又起一条 —— 每轮泄漏一条，
+                                             * 长时间运行会把宿主的连接数打满。
+                                             */
+                                            checkTask.cancel(true);
+                                            checkThread.interrupt();
                                             long waitTime = CHECK_TIMEOUT_MS - (System.currentTimeMillis() - checkStartTimestamp);
                                             if (waitTime > 0) {
                                                 Thread.sleep(waitTime);
@@ -635,9 +668,13 @@ public class ApplicationHook extends XposedModule {
                                             reLogin();
                                             return;
                                         }
+                                        if (!checkOk) {
+                                            Log.record("执行失败：检查未通过");
+                                            reLogin();
+                                            return;
+                                        }
                                         reLoginCount.set(0);
-                                    } catch (InterruptedException | ExecutionException |
-                                             TimeoutException e) {
+                                    } catch (InterruptedException | ExecutionException e) {
                                         // 切号/重载会中断本线程（stopTask 里 old.interrupt()），
                                         // 这属于正常收尾，不能当成"检查失败"去拉起登录页：
                                         // 登录页会打断切号流程，表现为切号频繁失败。
@@ -868,9 +905,20 @@ public class ApplicationHook extends XposedModule {
         if (service == null) {
             return false;
         }
+        /*
+         * 切号过程中不重载：切号自己会走一次 initialize()，
+         * 这里再重载一遍会把刚切入的账号又刷一次，
+         * 而且重载不判 paused，会在切号中途把流程打断（账号来回横跳）。
+         */
+        if (force && AccountSwitchController.isPaused()) {
+            Log.record("自动切号中，跳过配置重载");
+            return false;
+        }
         // 快速前置检查：未登录 / 无闹钟权限，留在调用线程同步返回（Toast 内部已切主线程，后台调用也安全）
         if (force) {
-            String userId = getUserId();
+            // 同样用账号服务判定：切号瞬间社交服务可能返回 null 或旧值，
+            // 那会让 initialize() 直接失败 → 切号被判失败 → 走 resume() 兜底 → 再次重载并弹登录页
+            String userId = resolveLoggedUid();
             if (userId == null) {
                 Log.record("用户未登录");
                 Toast.show("用户未登录");
@@ -999,7 +1047,9 @@ public class ApplicationHook extends XposedModule {
         }
         try {
             if (force) {
-                String userId = getUserId();
+                // 用账号服务取登录账号：切号后社交服务 getUserId() 可能还没刷新，
+                // 拿它去加载配置会把上一个账号的配置加载进来
+                String userId = resolveLoggedUid();
                 if (userId == null) {
                     Log.record("用户未登录");
                     Toast.show("用户未登录");
@@ -1069,7 +1119,7 @@ public class ApplicationHook extends XposedModule {
             }
             offline = false;
             if (exec) {
-                AccountSwitchController.onAccountRunStarted(getUserId());
+                AccountSwitchController.onRunResumed(resolveLoggedUid());
                 execHandler();
             } else {
                 // 只重载、不执行：但仍要排上下一跳——destroyHandler 已把旧排期清掉，
@@ -1265,8 +1315,7 @@ public class ApplicationHook extends XposedModule {
             execDelayedHandler(Math.max(BaseModel.getCheckInterval().getValue(), FALLBACK_INTERVAL));
             return;
         }
-        final int next = remainTimes - 1;
-        handler.postDelayed(() -> startMainTaskWithRetry(next, intervalMillis), intervalMillis);
+        handler.postDelayed(MAIN_RETRY, intervalMillis);
     }
 
     /** 是否已有待发的下一跳：单链之下既用它兜底续排，又不覆盖本轮更早的显式排期（定时执行、reLogin 快重试） */
@@ -1285,6 +1334,17 @@ public class ApplicationHook extends XposedModule {
             Log.printStackTrace(e);
         }
         startMainTask();
+    };
+
+    /** 起跳重试的具名 Runnable：可被 removeCallbacks 移除。
+     * <p>原实现用 lambda 投递，stopHandler() 摘不掉它：
+     * 重载后旧链仍会 startMainTask()，与新一轮抢同一个执行槽。
+     */
+    private static final Runnable MAIN_RETRY = new Runnable() {
+        @Override
+        public void run() {
+            startMainTaskWithRetry(MAIN_TASK_SLOT_RETRY_TIMES - 1, MAIN_TASK_SLOT_RETRY_INTERVAL);
+        }
     };
 
     /** 只收能量窗口内的重收间隔：好友能量 7:00 起陆续成熟，5 分钟一轮足够兜住 */
@@ -1356,6 +1416,7 @@ public class ApplicationHook extends XposedModule {
         ModelTask.stopAllTask();
         // 一并清掉待发 tick：否则重载后新周期第一轮会误判「已排期」而跳过续排，下一跳由上一周期的时刻决定
         mainHandler.removeCallbacks(MAIN_TICK);
+        mainHandler.removeCallbacks(MAIN_RETRY);
         tickScheduled = false;
         scheduledExecAt = 0;
     }

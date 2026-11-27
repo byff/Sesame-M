@@ -30,6 +30,15 @@ public class SystemChildTaskExecutor implements ChildTaskExecutor {
     @Override
     public Boolean addChildTask(ModelTask.ChildModelTask childTask) {
         ThreadPoolExecutor threadPoolExecutor = getChildGroupHandler(childTask.getGroup());
+        /*
+         * 线程池可能刚被 clearAllChildTask 关掉（切号时）：此时 submit 会抛
+         * RejectedExecutionException。addChildTask 是从模型线程调用的，
+         * 抛出去会让整轮任务崩掉，这里拦下来按「提交失败」处理。
+         */
+        if (threadPoolExecutor.isShutdown()) {
+            Log.record("子任务提交失败：线程池已关闭");
+            return false;
+        }
         long execTime = childTask.getExecTime();
         if (execTime > 0) {
             Runnable runnable = () -> {
@@ -37,7 +46,7 @@ public class SystemChildTaskExecutor implements ChildTaskExecutor {
                     return;
                 }
                 //String modelTaskId = getName();
-                Future<?> future = threadPoolExecutor.submit(() -> {
+                Future<?> future = submitQuietly(threadPoolExecutor, () -> {
                     try {
                         long delay = childTask.getExecTime() - System.currentTimeMillis();
                         if (delay > 0) {
@@ -51,7 +60,7 @@ public class SystemChildTaskExecutor implements ChildTaskExecutor {
                     } catch (Exception e) {
                         Log.printStackTrace(e);
                     } finally {
-                        childTask.getModelTask().removeChildTask(childTask.getId());
+                        childTask.getModelTask().removeChildTask(childTask);
                     }
                 });
                 // 取消动作要「叠加」而不是「覆盖」：
@@ -60,7 +69,9 @@ public class SystemChildTaskExecutor implements ChildTaskExecutor {
                 // 原写法第二次 setCancelTask 会把前一个覆盖掉，
                 // 于是「已投递到线程池、正在 sleep 等 execTime」的子任务
                 // 在切号后仍会醒来执行 —— 表现为上一个账号的定时任务跑到新账号上。
-                childTask.appendCancelTask(() -> future.cancel(true));
+                if (future != null) {
+                    childTask.appendCancelTask(() -> future.cancel(true));
+                }
             };
             long delayMillis = execTime - System.currentTimeMillis();
             if (delayMillis > 3000) {
@@ -71,18 +82,30 @@ public class SystemChildTaskExecutor implements ChildTaskExecutor {
                 handler.post(runnable);
             }
         } else {
-            Future<?> future = threadPoolExecutor.submit(() -> {
+            Future<?> future = submitQuietly(threadPoolExecutor, () -> {
                 try {
                     childTask.run();
                 } catch (Exception e) {
                     Log.printStackTrace(e);
                 } finally {
-                    childTask.getModelTask().removeChildTask(childTask.getId());
+                    childTask.getModelTask().removeChildTask(childTask);
                 }
             });
-            childTask.appendCancelTask(() -> future.cancel(true));
+            if (future != null) {
+                childTask.appendCancelTask(() -> future.cancel(true));
+            }
         }
         return true;
+    }
+
+    /** 提交子任务：线程池已关闭时返回 null 而不是抛异常，避免打断整轮任务 */
+    private static Future<?> submitQuietly(ThreadPoolExecutor executor, Runnable task) {
+        try {
+            return executor.submit(task);
+        } catch (RejectedExecutionException e) {
+            Log.record("子任务提交被拒：线程池已关闭");
+            return null;
+        }
     }
 
     @Override

@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.github.aw1y2z.sesame.data.AccountSwitchConfig;
 import io.github.aw1y2z.sesame.data.task.ModelTask;
+import io.github.aw1y2z.sesame.model.normal.base.BaseModel;
 import io.github.aw1y2z.sesame.util.Log;
 import io.github.aw1y2z.sesame.util.StringUtil;
 import io.github.aw1y2z.sesame.util.TimeUtil;
@@ -70,6 +71,12 @@ public final class AccountSwitchController {
     /** 两次切号之间的最小间隔，避免任务很快结束时连续调用宿主登录接口 */
     private static final long MIN_SWITCH_GAP_MILLIS = 60_000L;
     /**
+     * 账号最短驻留时间的兜底下限。
+     * <p>「切号等待间隔」设为 0 时用它兜底：切号会重载配置并重跑一轮，
+     * 若允许「跑完就切」，账号会每分钟来回切一次，支付宝反复切换登录态容易被风控。
+     */
+    private static final long MIN_RESIDENT_MILLIS = 10 * 60_000L;
+    /**
      * 切号前等待旧账号任务真正退出的超时。
      * <p>不等待就会让旧账号的收尾动作与新账号的任务重叠（两个账号同时处理同一个任务）。
      */
@@ -92,6 +99,17 @@ public final class AccountSwitchController {
     private static volatile long tasksStartedAt;
     private static volatile long idleSince;
     private static volatile long nextAttemptAt;
+    /**
+     * 当前驻留账号的 uid：用于判断「是不是换账号了」。
+     * <p>只有换账号才重置 {@link #residentSince}，重载配置不算换号。
+     */
+    private static volatile String residentUid;
+    /**
+     * 切入当前账号的时刻：切号判定「这个账号已经待了多久」的基准。
+     * <p>与 {@link #runStartTime} 的区别：runStartTime 是「本轮任务开始运行」，
+     * 每次重载/恢复都会刷新；residentSince 是「切入这个账号」，只有换账号才刷新。
+     */
+    private static volatile long residentSince;
     /** 本账号是否已经输出过「等待切号间隔」的提示，避免重复刷日志 */
     private static volatile boolean intervalWaitLogged;
     /** 上一次输出轮次等待状态的时间 */
@@ -100,6 +118,13 @@ public final class AccountSwitchController {
     private static volatile long lastSwitchEndAt;
     /** 切入常态保持账号的时间点，轮次等待从这个时间开始计算；0 表示等待时间视为已过（如重启后首次运行） */
     private static volatile long holdEnteredAt;
+    /**
+     * 常态保持账号本轮任务跑完的时刻：轮次间隔从这里起算。
+     * <p>不用 holdEnteredAt：保持账号切入后还要跑完自己的一轮，
+     * 若从切入时刻计时，这段时间会被白白吃掉，轮次间隔形同虚设，
+     * 表现为「切回保持账号 → 立刻又切走」。
+     */
+    private static volatile long holdRoundFinishedAt;
     /** 定时切号已触发并终止任务，到该时刻后切换到保持账号；0 表示没有待执行的定时切号 */
     private static volatile long scheduledSwitchAt;
     /** 上一次检查定时切号时间点的时刻，用于判断时间点是否落在两次检查之间 */
@@ -146,9 +171,51 @@ public final class AccountSwitchController {
         return paused;
     }
 
-    /** 当前账号开始运行：记录运行时长起点 */
-    public static void onAccountRunStarted(String uid) {
-        runStartTime = System.currentTimeMillis();
+    /**
+     * 切号是否正在执行。
+     * <p>比 {@link #isPaused()} 更精确：paused 在「切号中」和「轮次等待中」都为真，
+     * 而只有切号真正在跑时，外部的重载请求才需要被拦下。
+     */
+    public static boolean isSwitching() {
+        return switching;
+    }
+
+    /**
+     * 账号开始运行（没有换账号）：刷新运行起点即可。
+     * <p>驻留计时与轮次等待状态**不能**在这里重置：
+     * 重载配置（{@code runInit}）也会走到这里，那不是换账号。
+     * 原实现在这里清空了 awaitingResume / pendingSwitchUid，
+     * 于是「保存配置」恰好落在轮次等待中时，等待被静默取消，常态保持账号再也不会切走。
+     */
+    public static void onRunResumed(String uid) {
+        long now = System.currentTimeMillis();
+        runStartTime = now;
+        tasksStartedAt = 0;
+        idleSince = 0;
+        intervalWaitLogged = false;
+        if (!StringUtil.isEmpty(uid) && !uid.equals(residentUid)) {
+            // 以支付宝实际登录账号为准复核一次：切号过程中传进来的 uid 可能还是旧账号，
+            // 那时若直接重置驻留计时，会把「刚切入新账号」的计时清零，切号间隔永远不满。
+            String actual = AlipayAccountSwitchBridge.currentUid();
+            if (!StringUtil.isEmpty(actual) && !actual.equals(residentUid)) {
+                residentUid = actual;
+                residentSince = now;
+                Log.record("自动切号🔄️ 检测到登录账号变化为 " + label(actual) + "，重新开始计时");
+            }
+        }
+        Log.record("自动切号🔄️ 账号开始运行: " + label(uid));
+    }
+
+    /**
+     * 切号完成：登录账号已经换成 {@code uid}。
+     * <p>驻留计时从这里重新开始 —— 「切号等待间隔」的语义就是「每个账号至少待多久」，
+     * 必须从切入该账号的时刻算起，而不是从任务跑完那刻算。
+     */
+    public static void onAccountSwitched(String uid) {
+        long now = System.currentTimeMillis();
+        residentUid = uid;
+        residentSince = now;
+        runStartTime = now;
         tasksStartedAt = 0;
         idleSince = 0;
         nextAttemptAt = 0;
@@ -157,6 +224,8 @@ public final class AccountSwitchController {
         pendingSwitchUid = null;
         intervalWaitLogged = false;
         roundWaitLastLogAt = 0;
+        // 新账号要重新跑一轮，轮次等待的计时点重置
+        holdRoundFinishedAt = 0L;
         Log.record("自动切号🔄️ 账号开始运行: " + label(uid));
     }
 
@@ -288,7 +357,7 @@ public final class AccountSwitchController {
                         }
                     }
                     paused = false;
-                    onAccountRunStarted(currentHost.currentUid());
+                    onRunResumed(currentHost.currentUid());
                     currentHost.resume();
                     Log.record("自动切号🔄️ 轮次等待结束，开始运行");
                 } else if (now - roundWaitLastLogAt >= ROUND_WAIT_LOG_INTERVAL_MILLIS) {
@@ -336,6 +405,10 @@ public final class AccountSwitchController {
             }
             if (idleSince <= 0) {
                 idleSince = now;
+                // 本轮刚跑完：若当前是常态保持账号，记下这个时刻作为轮次间隔的计时起点
+                if (isCurrentHoldAccount(config)) {
+                    holdRoundFinishedAt = now;
+                }
             }
             if (now - idleSince < IDLE_GRACE_MILLIS) {
                 return;
@@ -347,21 +420,49 @@ public final class AccountSwitchController {
                 return;
             }
             long intervalMillis = config.getAccountSwitchIntervalMinutes() * 60_000L;
+            if (intervalMillis <= 0) {
+                /*
+                 * 「切号等待间隔 = 0」原本表示「任务一跑完就切」，但那会让账号每分钟来回切一次：
+                 * 切号会重载账号配置并重新排一轮任务，跑完又立刻满足切号条件，
+                 * 于是形成「切号 → 跑一轮 → 切号」的紧循环，
+                 * 支付宝的登录态反复切换，而用户的「执行间隔」完全失效。
+                 *
+                 * 现在「切号等待间隔」= 每个账号的**最短驻留时长**。
+                 * 设为 0 时回落到「一个执行周期」：每个账号至少跑完一整个执行周期再切，
+                 * 与「一个账号把所有操作做完后再切换」的直觉一致。
+                 */
+                intervalMillis = Math.max(BaseModel.getCheckInterval().getValue(), MIN_RESIDENT_MILLIS);
+            }
             /*
-             * 「切号等待间隔」从**任务跑完那一刻**起算，而不是从账号开始运行起算。
-             * 原实现用 runStartTime：本轮任务跑了 40 分钟、切号间隔设 10 分钟的话，
-             * 任务一结束就立刻切走 —— 间隔形同虚设，切号看起来非常频繁。
-             * 改成从 idleSince（任务全部完成）起算后，语义就是
-             * 「这个账号的任务跑完，再等 N 分钟才切走」，与配置项说明一致。
+             * 切号条件（两个都要满足）：
+             *   1) 当前账号的驻留时长 ≥ 切号等待间隔（从切入该账号的时刻算起）；
+             *   2) 当前这一轮任务已经全部跑完。
+             *
+             * 原实现只看「任务跑完 + 从跑完那刻起算的间隔」，间隔为 0 时任务一跑完就切。
+             * 而切号后又会立即重跑一轮（initialize(uid, true)），于是形成
+             * 「切号 → 跑一轮 → 切号」的紧循环：支付宝每分钟来回切一次账号，
+             * 用户的「执行间隔(50分钟)」形同虚设。
+             *
+             * 改成以「驻留时长」为准后，切号间隔真正变成「每个账号至少待多久」，
+             * 不管期间跑了几轮任务；第 2 条则保证切号一定发生在两轮任务之间，
+             * 不会出现两个账号的任务交叠。
              */
-            long waitedMillis = now - idleSince;
-            if (waitedMillis < intervalMillis) {
-                // 任务已全部完成，但要等切号间隔到，这里只提示一次
+            /*
+             * residentSince 理论上由 onAccountSwitched / onRunResumed 写入。
+             * 但两处都要能拿到登录账号才写得上，启动早期或读不到账号时它一直是 0，
+             * 于是 residentMillis 恒为 0，驻留条件永远不满足 → 永不切号。
+             * 这里用运行起点兜底，保证「至少待了这么久」这个语义始终成立。
+             */
+            long residentBase = residentSince > 0 ? residentSince : runStartTime;
+            long residentMillis = residentBase > 0 ? now - residentBase : 0;
+            if (residentMillis < intervalMillis) {
+                // 驻留时间还不够，任务虽已跑完也先不切
                 if (!intervalWaitLogged) {
                     intervalWaitLogged = true;
-                    long remainMinutes = (intervalMillis - waitedMillis + 59_999L) / 60_000L;
-                    Log.record("自动切号🔄️ 当前账号任务已全部完成，距离切号间隔还需 "
-                            + remainMinutes + " 分钟，等待中");
+                    long remainMinutes = (intervalMillis - residentMillis + 59_999L) / 60_000L;
+                    Log.record("自动切号🔄️ 当前账号任务已全部完成，" + label(currentHost.currentUid())
+                            + " 已驻留 " + (residentMillis / 60_000L) + " 分钟，"
+                            + "距离切号间隔还需 " + remainMinutes + " 分钟，等待中");
                 }
                 return;
             }
@@ -511,7 +612,8 @@ public final class AccountSwitchController {
              */
             long roundIntervalMinutes = config.getAccountSwitchRoundIntervalMinutes();
             if (holdRoundEnd && roundIntervalMinutes > 0) {
-                long waitRemainMillis = holdEnteredAt + roundIntervalMinutes * 60_000L
+                long roundWaitFrom = holdRoundFinishedAt > 0 ? holdRoundFinishedAt : holdEnteredAt;
+                long waitRemainMillis = roundWaitFrom + roundIntervalMinutes * 60_000L
                         - System.currentTimeMillis();
                 if (waitRemainMillis > 0) {
                     awaitingResume = true;
@@ -559,9 +661,13 @@ public final class AccountSwitchController {
                  * 记录切入时间（轮次等待从这一刻起算），保持账号继续按自己的执行间隔跑任务。
                  */
                 holdEnteredAt = System.currentTimeMillis();
+                holdRoundFinishedAt = 0L;
                 if (scheduledSwitchAt <= 0) {
                     paused = false;
                 }
+                // 先记驻留起点，再初始化：初始化里会回调 onRunResumed，
+                // 顺序反了会被当成「外部换了账号」，把驻留计时清零
+                onAccountSwitched(target.getUid());
                 completed = currentHost.initialize(target.getUid(), true);
                 if (!completed) {
                     Log.record("自动切号🔄️ 切换到常态保持账号后加载账号失败");
@@ -572,6 +678,7 @@ public final class AccountSwitchController {
                 if (scheduledSwitchAt <= 0) {
                     paused = false;
                 }
+                onAccountSwitched(target.getUid());
                 completed = currentHost.initialize(target.getUid(), true);
                 if (!completed) {
                     Log.record("自动切号🔄️ 切换后加载账号失败");
@@ -663,6 +770,7 @@ public final class AccountSwitchController {
             if (scheduledSwitchAt <= 0) {
                 paused = false;
             }
+            onAccountSwitched(targetUid);
             completed = currentHost.initialize(targetUid, true);
             if (completed) {
                 holdEnteredAt = 0L;
@@ -825,6 +933,7 @@ public final class AccountSwitchController {
             }
             holdEnteredAt = System.currentTimeMillis();
             paused = false;
+            onAccountSwitched(targetUid);
             completed = currentHost.initialize(targetUid, true);
             if (completed) {
                 Log.record("自动切号🔄️ 定时切号完成，已切换到 " + label(targetUid) + " 并开始执行");
@@ -948,6 +1057,23 @@ public final class AccountSwitchController {
     private static long failedRetryMillis() {
         return AlipayAccountSwitchBridge.isManualLoginRequired()
                 ? MANUAL_LOGIN_RETRY_MILLIS : FAILED_RETRY_MILLIS;
+    }
+
+    /**
+     * 当前登录账号是不是「常态保持账号」。
+     * <p>用于判断轮次等待的计时起点（保持账号本轮跑完的时刻）。
+     */
+    private static boolean isCurrentHoldAccount(AccountSwitchConfig.Snapshot config) {
+        Host currentHost = host;
+        if (currentHost == null) {
+            return false;
+        }
+        String holdUid = config.getAccountSwitchFinalAccountUid();
+        if (StringUtil.isEmpty(holdUid)) {
+            return false;
+        }
+        String currentUid = AlipayAccountSwitchBridge.currentUid();
+        return !StringUtil.isEmpty(currentUid) && holdUid.equals(currentUid);
     }
 
     private static boolean isSameAccount(AccountSwitchConfig.Account left,

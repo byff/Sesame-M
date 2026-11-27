@@ -69,9 +69,9 @@ public class BaseModel extends Model {
     @Getter
     private static final AccountSwitchIntervalModelField accountSwitchIntervalMinutes =
             new AccountSwitchIntervalModelField("accountSwitchIntervalMinutes",
-                    "切号等待间隔(分钟,0任务完成立即切)", 0, 0, 24 * 60,
+                    "切号等待间隔(分钟,每个账号最短停留)", 0, 0, 24 * 60,
                     AccountSwitchIntervalModelField.KIND_SWITCH)
-                    .setDescription("当前账号的任务全部跑完后，再等这么久才切到下一个账号");
+                    .setDescription("每个账号至少停留这么久，且该轮任务全部跑完后才切到下一个账号；0 表示按一个执行周期(50分钟)计算");
     @Getter
     private static final AccountSwitchIntervalModelField accountSwitchRoundIntervalMinutes =
             new AccountSwitchIntervalModelField("accountSwitchRoundIntervalMinutes",

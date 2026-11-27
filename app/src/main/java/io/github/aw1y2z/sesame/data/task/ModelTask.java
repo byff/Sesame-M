@@ -72,8 +72,11 @@ public abstract class ModelTask extends Model {
      * 若只看线程表，切号会在这段空窗里误判「本轮已跑完」，
      * 于是把后面还没跑的模型连同这一轮一起丢掉，账号就只剩零星几个模型在跑。
      * 派发期间一律视为「本轮未完成」。
+     * <p>用计数而不是布尔量：手动执行分组与定时轮次可能重叠，
+     * 布尔量会被先结束的那一轮置回 false，导致提前放行。
      */
-    private static volatile boolean roundDispatching = false;
+    private static final java.util.concurrent.atomic.AtomicInteger roundDispatching =
+            new java.util.concurrent.atomic.AtomicInteger();
 
     /**
      * 主任务线程池：每个模型占一条线程（core = 模型数），上限 2 倍模型数，饱和后回退到调用线程执行。
@@ -200,14 +203,28 @@ public abstract class ModelTask extends Model {
     }
 
     public void removeChildTask(String childId) {
-        ChildModelTask childTask = childTaskMap.remove(childId);
-        if (childTask != null) {
+        ChildModelTask removed = childTaskMap.remove(childId);
+        if (removed != null) {
             ChildTaskExecutor executor = childTaskExecutor;
             if (executor != null) {
                 // 通知执行器放锁外，别在 CHM 桶锁内调用可能阻塞的代码
-                executor.removeChildTask(childTask);
+                executor.removeChildTask(removed);
             }
         }
+    }
+
+    /**
+     * 子任务自己收尾时调用：按实例移除，避免同名的新子任务被误删。
+     * <p>同名顶替是常态（同一 id 每轮都会重新登记），旧任务收尾时若按 id 直接删，
+     * 会把新任务从表里摘掉 —— 新任务就不再被 {@link #isAllTaskFinished()} 计入，
+     * 切号时它可能还在跑，表现为「两个账号同时处理同一个任务」。
+     */
+    public void removeChildTask(ChildModelTask childTask) {
+        if (childTask == null) {
+            return;
+        }
+        // 只有表里登记的就是这一个实例时才移除
+        childTaskMap.remove(childTask.getId(), childTask);
     }
 
     public Integer countChildTask() {
@@ -303,7 +320,7 @@ public abstract class ModelTask extends Model {
         // 执行BaseModel中自定义执行请求
         taskRpcRequest();
         // 本轮开始：派发期间一律视为「本轮未完成」，直到最后一个模型起跑完
-        roundDispatching = true;
+        roundDispatching.incrementAndGet();
         try {
             for (Model model : getModelArray()) {
                 // 已停止就不再启动后续模型，否则 MAIN_TASK 会把整轮跑完
@@ -325,7 +342,7 @@ public abstract class ModelTask extends Model {
                 }
             }
         } finally {
-            roundDispatching = false;
+            roundDispatching.decrementAndGet();
         }
     }
 
@@ -383,7 +400,7 @@ public abstract class ModelTask extends Model {
      */
     public static boolean isAllTaskFinished() {
         // 正在派发新一轮：还有模型没起跑，此时线程表为空也不代表本轮跑完
-        if (roundDispatching) {
+        if (roundDispatching.get() > 0) {
             return false;
         }
         if (!MAIN_TASK_MAP.isEmpty()) {
@@ -393,7 +410,12 @@ public abstract class ModelTask extends Model {
                     return false;
                 }
             }
-            MAIN_TASK_MAP.clear();
+            // 逐条身份化移除，不能整表 clear：
+            // 遍历与 clear 之间可能有新一轮把条目 put 进来，整表清空会把它误删，
+            // 判定成「本轮已跑完」→ 切号切在半路 → 两个账号同时处理同一个任务。
+            for (Map.Entry<ModelTask, TaskRun> entry : MAIN_TASK_MAP.entrySet()) {
+                MAIN_TASK_MAP.remove(entry.getKey(), entry.getValue());
+            }
         }
         long now = System.currentTimeMillis();
         for (Model model : getModelArray()) {
@@ -412,15 +434,6 @@ public abstract class ModelTask extends Model {
             }
         }
         return true;
-    }
-
-    /**
-     * 仍在运行的模型任务数量（含正在收尾的旧代线程）。
-     * <p>切号时用它判断"旧账号的线程真的退出了没有"：{@link #isAllTaskFinished()}
-     * 只能反映瞬时状态，线程退出是异步的，需要轮询确认。
-     */
-    public static int getRunningTaskCount() {
-        return MAIN_TASK_MAP.size();
     }
 
     /**
@@ -460,7 +473,10 @@ public abstract class ModelTask extends Model {
                 }
             }
             if (allStopped) {
-                MAIN_TASK_MAP.clear();
+                // 逐条身份化移除，避免把等待期间新登记的条目误删
+                for (Map.Entry<ModelTask, TaskRun> entry : MAIN_TASK_MAP.entrySet()) {
+                    MAIN_TASK_MAP.remove(entry.getKey(), entry.getValue());
+                }
                 return true;
             }
             if (System.currentTimeMillis() >= deadline) {
@@ -504,10 +520,13 @@ public abstract class ModelTask extends Model {
         @Getter
         private final Long execTime;
 
-        private CancelTask cancelTask;
+        /** 创建时的账号简称：子任务线程用它把日志归到正确的账号下 */
+        private final String accountLabel;
+
+        private volatile CancelTask cancelTask;
 
         @Getter
-        private Boolean isCancel = false;
+        private volatile Boolean isCancel = false;
 
         public ChildModelTask() {
             this(null, null, () -> {
@@ -554,6 +573,12 @@ public abstract class ModelTask extends Model {
             this.group = group;
             this.runnable = runnable;
             this.execTime = execTime;
+            /*
+             * 记下创建时的账号简称：子任务在独立的线程池里跑，不会继承模型线程的绑定，
+             * 切号后全局简称会变成新账号，旧账号遗留的子任务日志就会被算到新账号头上 ——
+             * 看上去就是「两个账号在处理同一个任务」。
+             */
+            this.accountLabel = Log.getAccountLabel();
         }
 
         public Runnable setRunnable() {
@@ -565,9 +590,13 @@ public abstract class ModelTask extends Model {
             ModelTask owner = modelTask;
             ModelGroup group = owner == null ? null : owner.getGroup();
             String prevModule = Log.beginModule(group == null ? null : group.getCode());
+            // 绑定创建时的账号简称：切号后全局简称已变成新账号，
+            // 不绑定的话旧账号的子任务日志会被算到新账号头上
+            Log.bindThreadAccountLabel(accountLabel);
             try {
                 runnable.run();
             } finally {
+                Log.unbindThreadAccountLabel();
                 Log.endModule(prevModule);
             }
         }
@@ -580,22 +609,42 @@ public abstract class ModelTask extends Model {
          * 叠加一个取消动作，而不是覆盖已有的。
          * <p>子任务的取消往往需要同时做两件事（如：撤掉延迟投递 + 取消线程池里的 future），
          * 覆盖式赋值会丢掉前一个，导致切号后已投递的子任务仍会醒来执行。
+         * <p>读-改-写必须原子：{@link #stopTask()} 取消子任务与执行器注册取消动作可能并发，
+         * 非原子累积会丢掉其中一方（表现为切号后仍有旧账号的子任务在跑）。
          */
         protected void appendCancelTask(CancelTask extra) {
-            CancelTask previous = cancelTask;
-            cancelTask = () -> {
-                if (previous != null) {
-                    previous.cancel();
+            synchronized (this) {
+                CancelTask previous = cancelTask;
+                cancelTask = () -> {
+                    if (previous != null) {
+                        previous.cancel();
+                    }
+                    extra.cancel();
+                };
+                /*
+                 * 取消发生在注册之前时（cancel() 先于 appendCancelTask），
+                 * 当时 cancelTask 为空，isCancel 没有置位，
+                 * 延迟投递的 runnable 仍会醒来执行 —— 旧账号的子任务跑到新账号上。
+                 * 这里补上：已经取消了就立刻把新登记的动作也执行掉。
+                 */
+                if (Boolean.TRUE.equals(isCancel)) {
+                    try {
+                        extra.cancel();
+                    } catch (Exception e) {
+                        Log.printStackTrace(e);
+                    }
                 }
-                extra.cancel();
-            };
+            }
         }
 
         public final void cancel() {
-            if (cancelTask != null) {
+            // isCancel 必须无条件置位：执行器靠它早退，
+            // 没有 cancelTask 时也要标记，否则已投递的延迟子任务仍会醒来执行
+            isCancel = true;
+            CancelTask task = cancelTask;
+            if (task != null) {
                 try {
-                    cancelTask.cancel();
-                    isCancel = true;
+                    task.cancel();
                 } catch (Exception e) {
                     Log.printStackTrace(e);
                 }

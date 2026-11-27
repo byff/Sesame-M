@@ -17,10 +17,10 @@ import io.github.aw1y2z.sesame.util.StringUtil;
  *
  * 该文件不区分账号，模块 App 与支付宝注入进程共用同一份：
  * accountSwitchEnabled              是否开启自动切换登录账号
- * accountSwitchIntervalMinutes      切号等待间隔(分钟，0=当前账号任务跑完立即切)
+ * accountSwitchIntervalMinutes      切号等待间隔(分钟，每个账号的最短停留时长；0=按一个执行周期)
  * accountSwitchRoundIntervalMinutes 切号轮次间隔(分钟，0=不等待)
  * accountSwitchAccounts             账号列表，顺序即切号顺序，循环执行
- * accountSwitchFinalAccountUid      常态保持账号(一轮走完后切入该账号，再等轮次间隔)
+ * accountSwitchFinalAccountUid      常态保持账号(一轮走完后切入该账号，本轮跑完再等轮次间隔)
  * accountSwitchScheduleTimes        切换账号定时执行时间点，如 ["0800","2000"]
  * autoSlideCaptchaEnabled           自动处理滑动/拼图验证
  * unlockAccountLimitEnabled         解除登录账号数量限制
@@ -133,40 +133,107 @@ public final class AccountSwitchConfig {
     }
 
     public static synchronized boolean setAccountSwitchEnabled(boolean enabled) {
-        Snapshot snapshot = readFresh();
-        snapshot.setAccountSwitchEnabled(enabled);
-        return write(snapshot);
+        return mutateAndWrite(Field.ENABLED, s -> s.setAccountSwitchEnabled(enabled));
     }
 
     public static synchronized boolean setAccountSwitchIntervalMinutes(int minutes) {
-        Snapshot snapshot = readFresh();
-        snapshot.setAccountSwitchIntervalMinutes(clampMinutes(minutes));
-        return write(snapshot);
+        int clamped = clampMinutes(minutes);
+        return mutateAndWrite(Field.INTERVAL, s -> s.setAccountSwitchIntervalMinutes(clamped));
     }
 
     public static synchronized boolean setAccountSwitchRoundIntervalMinutes(int minutes) {
-        Snapshot snapshot = readFresh();
-        snapshot.setAccountSwitchRoundIntervalMinutes(clampMinutes(minutes));
-        return write(snapshot);
+        int clamped = clampMinutes(minutes);
+        return mutateAndWrite(Field.ROUND_INTERVAL, s -> s.setAccountSwitchRoundIntervalMinutes(clamped));
     }
 
     /** 按传入顺序整体替换账号列表（界面上下移动后保存） */
     public static synchronized boolean setAccountSwitchAccounts(List<Account> accounts) {
-        Snapshot snapshot = readFresh();
-        snapshot.setAccountSwitchAccounts(normalize(accounts));
-        return write(snapshot);
+        List<Account> normalized = normalize(accounts);
+        return mutateAndWrite(Field.ACCOUNTS, s -> s.setAccountSwitchAccounts(normalized));
     }
 
     public static synchronized boolean setAccountSwitchFinalAccountUid(String uid) {
-        Snapshot snapshot = readFresh();
-        snapshot.setAccountSwitchFinalAccountUid(uid);
-        return write(snapshot);
+        return mutateAndWrite(Field.FINAL_ACCOUNT, s -> s.setAccountSwitchFinalAccountUid(uid));
     }
 
     public static synchronized boolean setAccountSwitchScheduleTimes(List<String> times) {
+        List<String> normalized = normalizeScheduleTimes(times);
+        return mutateAndWrite(Field.SCHEDULE_TIMES, s -> s.setAccountSwitchScheduleTimes(normalized));
+    }
+
+    /**
+     * 改一个字段并落盘。
+     * <p>写盘前**重新读一次磁盘**，只把本次真正改动的那个字段套到最新磁盘内容上：
+     * 模块 App 进程与支付宝注入进程共用这一个文件，两边的 {@code synchronized}
+     * 互不相干。原先是「readFresh → 改字段 → write」三步，
+     * 另一个进程若在这两步之间改了同一文件，本次写回就会把它的改动覆盖掉
+     * （表现为用户在设置里改的「切号等待间隔」被注入进程悄悄还原成默认值）。
+     * 真正要彻底消除丢更新需要文件锁，但两个进程都要改，代价大，这里先合并到最新磁盘状态。
+     *
+     * @param field   本次改动的字段
+     * @param mutator 在快照上施加改动
+     */
+    private static boolean mutateAndWrite(Field field, java.util.function.Consumer<Snapshot> mutator) {
         Snapshot snapshot = readFresh();
-        snapshot.setAccountSwitchScheduleTimes(normalizeScheduleTimes(times));
-        return write(snapshot);
+        mutator.accept(snapshot);
+        // 再读一次磁盘拿到别的进程写入的内容，只把本次改动的字段覆盖上去
+        Snapshot latest = load(getFile());
+        field.applyTo(latest, snapshot);
+        return write(latest);
+    }
+
+    /** 可写字段：用于跨进程写盘时只合并本次真正改动的那一项 */
+    private enum Field {
+        ENABLED {
+            @Override
+            void applyTo(Snapshot target, Snapshot source) {
+                target.setAccountSwitchEnabled(source.isAccountSwitchEnabled());
+            }
+        },
+        INTERVAL {
+            @Override
+            void applyTo(Snapshot target, Snapshot source) {
+                target.setAccountSwitchIntervalMinutes(source.getAccountSwitchIntervalMinutes());
+            }
+        },
+        ROUND_INTERVAL {
+            @Override
+            void applyTo(Snapshot target, Snapshot source) {
+                target.setAccountSwitchRoundIntervalMinutes(source.getAccountSwitchRoundIntervalMinutes());
+            }
+        },
+        ACCOUNTS {
+            @Override
+            void applyTo(Snapshot target, Snapshot source) {
+                target.setAccountSwitchAccounts(source.getAccountSwitchAccounts());
+            }
+        },
+        FINAL_ACCOUNT {
+            @Override
+            void applyTo(Snapshot target, Snapshot source) {
+                target.setAccountSwitchFinalAccountUid(source.getAccountSwitchFinalAccountUid());
+            }
+        },
+        SCHEDULE_TIMES {
+            @Override
+            void applyTo(Snapshot target, Snapshot source) {
+                target.setAccountSwitchScheduleTimes(source.getAccountSwitchScheduleTimes());
+            }
+        },
+        AUTO_SLIDE_CAPTCHA {
+            @Override
+            void applyTo(Snapshot target, Snapshot source) {
+                target.setAutoSlideCaptchaEnabled(source.isAutoSlideCaptchaEnabled());
+            }
+        },
+        UNLOCK_ACCOUNT_LIMIT {
+            @Override
+            void applyTo(Snapshot target, Snapshot source) {
+                target.setUnlockAccountLimitEnabled(source.isUnlockAccountLimitEnabled());
+            }
+        };
+
+        abstract void applyTo(Snapshot target, Snapshot source);
     }
 
     /** 是否自动处理滑动/拼图验证（默认开启） */
@@ -197,15 +264,11 @@ public final class AccountSwitchConfig {
     }
 
     public static synchronized boolean setAutoSlideCaptchaEnabled(boolean enabled) {
-        Snapshot snapshot = readFresh();
-        snapshot.setAutoSlideCaptchaEnabled(enabled);
-        return write(snapshot);
+        return mutateAndWrite(Field.AUTO_SLIDE_CAPTCHA, s -> s.setAutoSlideCaptchaEnabled(enabled));
     }
 
     public static synchronized boolean setUnlockAccountLimitEnabled(boolean enabled) {
-        Snapshot snapshot = readFresh();
-        snapshot.setUnlockAccountLimitEnabled(enabled);
-        return write(snapshot);
+        return mutateAndWrite(Field.UNLOCK_ACCOUNT_LIMIT, s -> s.setUnlockAccountLimitEnabled(enabled));
     }
 
     /**
@@ -246,8 +309,15 @@ public final class AccountSwitchConfig {
         if (!changed) {
             return true;
         }
-        snapshot.setAccountSwitchAccounts(new ArrayList<>(merged.values()));
-        return write(snapshot);
+        /*
+         * 写盘前再读一次磁盘，只把账号列表这一项套到最新磁盘内容上。
+         * 本方法只负责账号列表，却会把整份配置写回；
+         * 不做这一步的话，用户刚在设置里改的「切号等待间隔」等会被这里的旧快照覆盖掉
+         * —— 表现为设置改了不生效。
+         */
+        Snapshot latest = load(getFile());
+        Field.ACCOUNTS.applyTo(latest, snapshot);
+        return write(latest);
     }
 
     private static Snapshot load(File file) {
@@ -301,6 +371,16 @@ public final class AccountSwitchConfig {
             snapshot.setAccountSwitchAccounts(normalize(accounts));
         } catch (Throwable t) {
             Log.printStackTrace(TAG + "#解析 config_common.json 失败", t);
+            /*
+             * 解析失败时**保留上一次读到的有效配置**，不要回落默认值：
+             * 回落默认值会让「自动切号开关」变成关、「切号等待间隔」变成 0，
+             * 而紧接着的任何一次 write 都会把这份默认值写回磁盘，
+             * 用户的切号配置就被静默清空了。
+             */
+            Snapshot previous = cache;
+            if (previous != null) {
+                return previous.copy();
+            }
             snapshot.setAccountSwitchAccounts(new ArrayList<>());
         }
         return snapshot;

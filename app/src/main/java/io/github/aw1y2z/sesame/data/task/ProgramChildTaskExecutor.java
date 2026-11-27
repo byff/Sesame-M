@@ -17,6 +17,11 @@ public class ProgramChildTaskExecutor implements ChildTaskExecutor {
     @Override
     public Boolean addChildTask(ModelTask.ChildModelTask childTask) {
         ThreadPoolExecutor threadPoolExecutor = getChildGroupThreadPool(childTask.getGroup());
+        // 线程池可能刚被 clearAllChildTask 关掉（切号时）：submit 会抛 RejectedExecutionException
+        if (threadPoolExecutor.isShutdown()) {
+            Log.record("子任务提交失败：线程池已关闭");
+            return false;
+        }
         Future<?> future;
         long execTime = childTask.getExecTime();
         if (execTime > 0) {
@@ -38,7 +43,7 @@ public class ProgramChildTaskExecutor implements ChildTaskExecutor {
                 } catch (Exception e) {
                     Log.printStackTrace(e);
                 } finally {
-                    childTask.getModelTask().removeChildTask(childTask.getId());
+                    childTask.getModelTask().removeChildTask(childTask);
                 }
             });
         } else {
@@ -48,7 +53,7 @@ public class ProgramChildTaskExecutor implements ChildTaskExecutor {
                 } catch (Exception e) {
                     Log.printStackTrace(e);
                 } finally {
-                    childTask.getModelTask().removeChildTask(childTask.getId());
+                    childTask.getModelTask().removeChildTask(childTask);
                 }
             });
         }

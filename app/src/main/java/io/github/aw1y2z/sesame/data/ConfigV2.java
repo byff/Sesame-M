@@ -38,11 +38,15 @@ public class ConfigV2 {
      * 模块 App 与注入进程各持一份 ConfigV2 快照、都会整份落盘，靠它识别"文件被别的进程改过"。
      */
     @JsonIgnore
+    /** 上次同步到的磁盘文本 */
     private static String lastSyncedText;
 
     /** 上次同步时各字段的值快照（key = modelCode|fieldCode），用于挑出本进程真正改过的字段 */
     @JsonIgnore
     private static final Map<String, String> valueBaseline = new ConcurrentHashMap<>();
+
+    /** 当前加载的是哪个账号的配置 */
+    private static String currentUserId;
 
     public void setModelFieldsMap(Map<String, ModelFields> newModels) {
         modelFieldsMap.clear();
@@ -68,6 +72,13 @@ public class ConfigV2 {
                             if (value != null) {
                                 configModelField.setObjectValue(value);
                             }
+                        } else {
+                            /*
+                             * 这个分组在磁盘上但缺这个字段（老版本配置、后来新增的字段）：
+                             * 字段实例是进程级共享的，上一个账号改过的值会留在这里，
+                             * 不复位就会把 A 账号的设置继承给 B 账号并写进 B 的配置文件。
+                             */
+                            configModelField.reset();
                         }
                     } catch (Exception e) {
                         Log.printStackTrace(e);
@@ -79,6 +90,13 @@ public class ConfigV2 {
                     if (configModelField instanceof GlobalConfigField) {
                         continue;
                     }
+                    /*
+                     * 磁盘上没有这个分组时要**显式复位**到默认值：
+                     * 字段实例是进程级共享的，上一个账号把值改过之后会留在这里，
+                     * 直接沿用就会把 A 账号的设置继承给 B 账号，
+                     * 再被写进 B 账号的 config_v2.json 里。
+                     */
+                    configModelField.reset();
                     newModelFields.addField(configModelField);
                 }
             }
@@ -186,6 +204,27 @@ public class ConfigV2 {
     }
 
     public static synchronized Boolean save(String userId, Boolean force) {
+        /*
+         * 要保存的账号与内存里当前加载的账号不是同一个时，先把目标账号的配置读进来：
+         * 否则会把 A 账号的字段值写进 B 账号的 config_v2.json（账号配置互串）。
+         * 切号流程里 pause() 用的是 UserIdMap.getCurrentUid()、加载用的是登录账号，
+         * 两者在切号瞬间可能不同，正是这个坑的来源。
+         *
+         * 注意这里不能直接调 load()：load() 内部会 captureBaseline() 把基线清掉，
+         * 后面 collectChangedFields() 就会返回空 → 直接 return true → 提示「保存成功」却零字节落盘。
+         * 所以改为：先收集本进程的改动 → 读目标账号的配置 → 把改动压回去。
+         */
+        Map<String, Object> pending = null;
+        if (currentUserId != null && !currentUserId.equals(userId)) {
+            Log.record("保存配置前切换到目标账号: " + userId);
+            pending = collectChangedFields();
+            load(userId);
+            // load() 覆盖了内存字段，把本进程的改动原样压回去
+            applyChangedFields(pending);
+        } else if (currentUserId == null) {
+            // 还没加载过任何账号：直接加载目标账号，避免拿空配置覆盖磁盘
+            load(userId);
+        }
         // 本进程没有任何字段级改动时直接返回：写盘只会把磁盘上本进程不认识的键整份覆盖丢失
         if (!valueBaseline.isEmpty() && collectChangedFields().isEmpty()) {
             return true;
@@ -235,6 +274,7 @@ public class ConfigV2 {
                     userName = userEntity.getShowName();
                 }
             }
+            currentUserId = userId;
             Log.record("加载配置: " + userName);
             if (configV2File.exists()) {
                 String json = FileUtil.readFromFile(configV2File);
@@ -417,6 +457,16 @@ public class ConfigV2 {
      */
     private static boolean mergeDiskChanges(String userId) {
         try {
+            /*
+             * 内存里加载的不是目标账号时不能合并磁盘内容：
+             * 此时内存里是 A 账号的字段值、磁盘文件是 B 账号的，
+             * 重载磁盘会把 B 的配置灌进当前内存，随后又写回磁盘 —— 账号配置互相串。
+             * save() 已经先把内存切到目标账号，这里是兜底。
+             */
+            if (currentUserId != null && !currentUserId.equals(userId)) {
+                Log.record("内存配置属于其它账号，跳过磁盘合并以免账号配置互串");
+                return false;
+            }
             File configV2File = StringUtil.isEmpty(userId) ? FileUtil.getDefaultConfigV2File() : FileUtil.getConfigV2File(userId);
             if (!configV2File.exists() || lastSyncedText == null) {
                 return false;
@@ -438,14 +488,7 @@ public class ConfigV2 {
                 Log.record("配置已被其他进程更新，本进程无改动，已重载并跳过写入");
                 return true;
             }
-            for (Map.Entry<String, Object> entry : changed.entrySet()) {
-                int separator = entry.getKey().indexOf('|');
-                ModelFields modelFields = INSTANCE.modelFieldsMap.get(entry.getKey().substring(0, separator));
-                ModelField<?> field = modelFields == null ? null : modelFields.get(entry.getKey().substring(separator + 1));
-                if (field != null) {
-                    field.setObjectValue(entry.getValue());
-                }
-            }
+            applyChangedFields(changed);
             Log.record("配置已被其他进程更新，已合并本进程改动后再保存");
         } catch (Throwable t) {
             Log.printStackTrace(TAG, t);
@@ -455,6 +498,25 @@ public class ConfigV2 {
 
     private static String fieldKey(String modelCode, String fieldCode) {
         return modelCode + "|" + fieldCode;
+    }
+
+    /** 把收集到的字段改动原样写回内存字段 */
+    private static void applyChangedFields(Map<String, Object> changed) {
+        if (changed == null || changed.isEmpty()) {
+            return;
+        }
+        for (Map.Entry<String, Object> entry : changed.entrySet()) {
+            int separator = entry.getKey().indexOf('|');
+            if (separator < 0) {
+                continue;
+            }
+            ModelFields modelFields = INSTANCE.modelFieldsMap.get(entry.getKey().substring(0, separator));
+            ModelField<?> field = modelFields == null
+                    ? null : modelFields.get(entry.getKey().substring(separator + 1));
+            if (field != null) {
+                field.setObjectValue(entry.getValue());
+            }
+        }
     }
 
     /** 字段值的浅拷贝：集合/Map/KVNode 复制一份，避免重载时被就地改掉；其余按不可变类型处理 */
