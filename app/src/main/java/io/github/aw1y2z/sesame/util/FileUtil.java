@@ -727,6 +727,26 @@ public class FileUtil {
     public static File getGoldenBeansMallItemMapFile() {
         return getFile(MAIN_DIRECTORY_FILE, "GoldenBeansMallItem.json");
     }
+
+    /**
+     * 游戏任务收集表（MiniGameTaskListMap），所有账号共用：
+     * key=任务名[描述]，value=出现过的任务列表类集合。
+     */
+    public static File getMiniGameTaskListMapFile() {
+        return getFile(MAIN_DIRECTORY_FILE, "MiniGameTask.json");
+    }
+
+    /**
+     * 游戏任务收集表的图标缓存（key=任务名[描述]，value=图标地址），与 MiniGameTask.json 平级。
+     */
+    public static File getMiniGameTaskIconMapFile() {
+        return getFile(MAIN_DIRECTORY_FILE, "MiniGameTaskIcon.json");
+    }
+
+    /** 游戏任务适配表（MiniGameTaskTable），与 MiniGameTask.json 平级；缺失/损坏时由默认表重建。 */
+    public static File getMiniGameTaskTableFile() {
+        return getFile(MAIN_DIRECTORY_FILE, "MiniGameTaskTable.json");
+    }
     
     /** 自动拉黑记录（含日期），用于"超期自动解禁重试" */
     public static File getAutoBlackListMapFile() {

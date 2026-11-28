@@ -26,6 +26,7 @@ import io.github.aw1y2z.sesame.data.task.TaskAttemptPolicy;
 import io.github.aw1y2z.sesame.data.task.TaskAward;
 import io.github.aw1y2z.sesame.entity.AlipayMonopolyTaskList;
 import io.github.aw1y2z.sesame.model.base.TaskAlternative;
+import io.github.aw1y2z.sesame.model.task.antGame.TaskAlternative.GameTask;
 import io.github.aw1y2z.sesame.util.Log;
 import io.github.aw1y2z.sesame.util.MessageUtil;
 import io.github.aw1y2z.sesame.util.Statistics;
@@ -705,6 +706,23 @@ public final class AntForestPatrol {
                     String status = base.optString("taskStatus");
                     // 黑名单任务静默跳过；已完成待领奖的仍把奖励领掉（与森林任务一致）
                     if (isMonopolyTaskBlacklisted(title) && !"FINISHED".equals(status)) {
+                        //黑名单里的游戏/跳转第三方任务 → 走 handleGameTask 做平台侧链接模拟+领奖+补量
+                        JSONObject biz = monopolyBizInfo(base);
+                        TaskAlternative.handleGameTask(new GameTask("MonopolyTaskList",
+                                title, TaskAlternative.firstNonEmpty(biz.optString("desc"),
+                                        biz.optString("taskDesc")),
+                                TaskAlternative.firstNonEmpty(biz.optString("targetUrl"),
+                                        biz.optString("taskJumpUrl"), biz.optString("link")),
+                                status)
+                                .bizKey(taskType)
+                                .taskRemain(Math.max(0, base.optInt("taskRequire", 0)
+                                        - base.optInt("taskProgress", 0)))
+                                .taskPlayType(TaskAlternative.firstNonEmpty(base.optString("taskPlayType"),
+                                        base.optString("taskProdPlayType")))
+                                .taskMode(base.optString("taskMode"))
+                                .taskSceneCode(taskSceneCode)
+                                .scene(taskSceneCode, "ANTFOREST")
+                                .version(TaskAlternative.DEFAULT_VERSION));
                         continue;
                     }
                     if ("FINISHED".equals(status)) {
@@ -757,6 +775,19 @@ public final class AntForestPatrol {
             }
         }
         return taskType;
+    }
+
+    /* 新版保护地任务的 bizInfo（任务列表里是 JSON 字符串，解析失败返回空对象） */
+    private static JSONObject monopolyBizInfo(JSONObject base) {
+        try {
+            String bizInfo = base.optString("bizInfo");
+            if (!bizInfo.isEmpty()) {
+                return new JSONObject(bizInfo);
+            }
+        } catch (Throwable t) {
+            Log.err(TAG, "monopolyBizInfo err:", t);
+        }
+        return new JSONObject();
     }
 
     /* 新版保护地任务是否在配置的黑名单里（键统一剥掉标题末尾的 "(n/N)" 次数后缀） */

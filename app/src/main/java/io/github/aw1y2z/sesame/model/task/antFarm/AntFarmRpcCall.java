@@ -157,6 +157,15 @@ public class AntFarmRpcCall {
         return TaskAlternative.request(bizKey, taskSceneCode, VERSION);
     }
 
+    /**
+     * 家庭任务专用：单次尝试（tryCount=1），避免 RPC 桥超时后长时间阻塞整个家庭任务循环。
+     * <p>家庭任务循环里对每个任务自己控制重试与间隔，不走默认的 3 次重试。
+     */
+    public static String doFamilyFarmTask(String bizKey) {
+        String args1 = "[{\"bizKey\":\"" + bizKey + "\",\"requestType\":\"RPC\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"taskSceneCode\":\"ANTFARM_FAMILY_TASK\",\"version\":\"" + VERSION + "\"}]";
+        return ApplicationHook.requestString("com.alipay.antfarm.doFarmTask", args1, 1, 0);
+    }
+
     //{"bizKey":"SHH_liyunrui","requestType":"NORMAL","sceneCode":"ANTFARM","source":"H5","version":"1.8.2302070202.46"}]}
     public static String doFarmTask(String bizKey) {
         if (TaskAlternative.isTransactionTask(bizKey)) {
@@ -431,7 +440,17 @@ public class AntFarmRpcCall {
     }
 
     public static String getMallHome(String bizType) {
-        return ApplicationHook.requestString("com.alipay.charitygamecenter.getMallHome", "[{\"bizType\":\"" + bizType + "\",\"pageSize\":10,\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"startIndex\":0}]");
+        return getMallHome(bizType, 0);
+    }
+
+    /**
+     * 乐园商店分页查询：服务端按下发 hasMore/nextStartIndex 分页，
+     * 只查 startIndex=0 那一页会漏掉后面的道具，导致该兑换的没兑换。
+     *
+     * @param startIndex 起始位置，由上一页响应里的 nextStartIndex 推进
+     */
+    public static String getMallHome(String bizType, int startIndex) {
+        return ApplicationHook.requestString("com.alipay.charitygamecenter.getMallHome", "[{\"bizType\":\"" + bizType + "\",\"pageSize\":10,\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"startIndex\":" + startIndex + "}]");
     }
 
     public static String getMallItemDetail(String spuId) {

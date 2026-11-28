@@ -31,6 +31,7 @@ import io.github.aw1y2z.sesame.hook.ApplicationHook;
 import io.github.aw1y2z.sesame.hook.Toast;
 import io.github.aw1y2z.sesame.model.base.TaskCommon;
 import io.github.aw1y2z.sesame.model.base.TaskAlternative;
+import io.github.aw1y2z.sesame.model.task.antGame.TaskAlternative.GameTask;
 import io.github.aw1y2z.sesame.model.extensions.ExtensionsHandle;
 import io.github.aw1y2z.sesame.util.Log;
 import io.github.aw1y2z.sesame.util.MessageUtil;
@@ -452,8 +453,20 @@ public class AntSports extends ModelTask {
                     }
                     continue;
                 }
-                //黑名单任务跳过
+                //黑名单任务跳过（游戏/跳转第三方任务由 TaskAlternative 执行一次后跳过）
                 if (AntSportsTaskList.getValue().contains(taskName)) {
+                    TaskAlternative.handleGameTask(new GameTask("AntSportsTaskList",
+                            taskName, "",
+                            TaskAlternative.firstNonEmpty(jo.optString("targetUrl"),
+                            jo.optString("taskJumpUrl"), jo.optString("link")),
+                            TaskStatus.WAIT_COMPLETE.name().equals(taskStatus) ? "TODO" : taskStatus)
+                            .bizKey(jo.optString("taskId"))
+                            .taskPlayType(TaskAlternative.firstNonEmpty(jo.optString("taskPlayType"),
+                            jo.optString("taskProdPlayType")))
+                            .taskMode(jo.optString("taskMode"))
+                            .taskSceneCode("ANTSPORTS")
+                            .scene("ANTSPORTS", "medical_health")
+                            .version(AntSportsRpcCall.VERSION));
                     continue;
                 }
                 if (!jo.has("taskAction")) {

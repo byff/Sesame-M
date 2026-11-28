@@ -1558,6 +1558,14 @@ public class ApplicationHook extends XposedModule {
     }
 
     /**
+     * 原样发送调用方拼好的信封 JSON，不做任何字段加工（供逐字节复现抓包请求）。
+     * <p>当前桥接实现不支持时返回 null，调用方自行回落完整信封。
+     */
+    public static String requestRawEnvelope(String method, String envelopeJson) {
+        return rpcBridge.requestRawEnvelope(method, envelopeJson);
+    }
+
+    /**
      * 在本进程内重载 hook，效果等同 restart 广播；同进程自救绕广播只会多依赖一次分发，
      * 而服务刚被销毁时那恰恰是最不可靠的一环。
      */

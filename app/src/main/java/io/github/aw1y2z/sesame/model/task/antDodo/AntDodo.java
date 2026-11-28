@@ -21,6 +21,7 @@ import io.github.aw1y2z.sesame.model.base.TaskCommon;
 import io.github.aw1y2z.sesame.model.base.TaskAlternative;
 import io.github.aw1y2z.sesame.model.task.antFarm.AntFarm.TaskStatus;
 import io.github.aw1y2z.sesame.model.task.antForest.AntForestV2;
+import io.github.aw1y2z.sesame.model.task.antGame.TaskAlternative.GameTask;
 import io.github.aw1y2z.sesame.util.Log;
 import io.github.aw1y2z.sesame.util.MessageUtil;
 import io.github.aw1y2z.sesame.util.Status;
@@ -302,6 +303,9 @@ public class AntDodo extends ModelTask {
                     if (TaskStatus.RECEIVED.name().equals(taskStatus)) {
                         continue;
                     }
+                    JSONObject taskRights = taskInfo.optJSONObject("taskRights");
+                    int rightsTimes = taskRights == null ? 0 : taskRights.optInt("rightsTimes", 0);
+                    int rightsTimesLimit = taskRights == null ? 1 : taskRights.optInt("rightsTimesLimit", 1);
                     String sceneCode = taskBaseInfo.getString("sceneCode");
                     String taskType = taskBaseInfo.getString("taskType");
                     JSONObject bizInfo = new JSONObject(taskBaseInfo.getString("bizInfo"));
@@ -316,7 +320,17 @@ public class AntDodo extends ModelTask {
                         if (TaskAttemptPolicy.isCyclicTask(taskBaseInfo)) {
                             continue;
                         }
-                        if (finishTask(sceneCode, taskType, taskTitle)) {
+                        // 链接字段不同接口名字不同：targetUrl / taskJumpUrl / link 逐级回落（兼容空串）
+                        String targetUrl = TaskAlternative.firstNonEmpty(bizInfo.optString("targetUrl"),
+                                bizInfo.optString("taskJumpUrl"), bizInfo.optString("link"));
+                        // 游戏类任务剩余档数=taskRequire-taskProgress（如「完成10个居民订单」=5档，每档2单）
+                        int taskRemain = Math.max(0, taskBaseInfo.optInt("taskRequire", 0)
+                                - taskBaseInfo.optInt("taskProgress", 0));
+                        if (finishTask(sceneCode, taskType, taskTitle, targetUrl,
+                                taskBaseInfo.optString("taskMode"),
+                                taskBaseInfo.optString("taskPlayType", taskBaseInfo.optString("taskProdPlayType")),
+                                rightsTimes, rightsTimesLimit, taskRemain,
+                                bizInfo.optString("taskDesc"))) {
                             receiveTaskAward(sceneCode, taskType, taskTitle);
                         }
                     }
@@ -327,9 +341,21 @@ public class AntDodo extends ModelTask {
         }
     }
 
-    private Boolean finishTask(String sceneCode, String taskType, String taskTitle) {
-        //黑名单任务跳过
+    private Boolean finishTask(String sceneCode, String taskType, String taskTitle, String targetUrl,
+                                String taskMode, String taskPlayType, int rightsTimes, int rightsTimesLimit,
+                                int taskRemain, String taskDesc) {
+        //第1步：黑名单任务跳过（游戏/跳转第三方任务由 TaskAlternative 执行一次后跳过）
         if (AntDodoTaskList.getValue().contains(taskTitle)) {
+            TaskAlternative.handleGameTask(new GameTask("AntDodoTaskList",
+                    taskTitle, taskDesc, targetUrl, "TODO")
+                    .bizKey(taskType)
+                    .rights(rightsTimes, rightsTimesLimit)
+                    .taskRemain(taskRemain)
+                    .taskPlayType(taskPlayType)
+                    .taskMode(taskMode)
+                    .taskSceneCode(sceneCode)
+                    .scene(sceneCode, "af-biodiversity")
+                    .version(AntDodoRpcCall.VERSION));
             return false;
         }
         // 做不了的当天只试一次、临时故障留待下一轮（见 TaskAttemptPolicy）

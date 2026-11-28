@@ -27,6 +27,12 @@ final class AntForestProp {
 
     private static final String TAG = AntForestProp.class.getSimpleName();
 
+    /** 道具背包翻页上限：hasMore 异常一直为真时兜底 */
+    private static final int FOREST_PROP_MAX_PAGES = 10;
+
+    /** 道具背包翻页间隔（毫秒），别把服务端打出限流 */
+    private static final long FOREST_PROP_PAGE_INTERVAL = 300L;
+
     private final AntForestV2 host;
 
     /** 双击卡"查一次用一次"的互斥，避免多线程重复消耗 */
@@ -484,13 +490,10 @@ final class AntForestProp {
         try {
             do {
                 try {
-                    JSONObject jo = new JSONObject(AntForestRpcCall.queryPropList(true));
-                    if (!MessageUtil.checkResultCode(TAG, jo)) {
-                        return;
-                    }
-                    JSONArray forestPropVOList = jo.optJSONArray("forestPropVOList");
-                    if (forestPropVOList != null && forestPropVOList.length() > 0) {
-                        jo = forestPropVOList.getJSONObject(0);
+                    // 走分页版本：只查首页会漏掉后面可赠送的道具
+                    JSONArray forestPropVOList = getForestPropVOList(true);
+                    if (forestPropVOList.length() > 0) {
+                        JSONObject jo = forestPropVOList.getJSONObject(0);
                         String giveConfigId = jo.getJSONObject("giveConfigVO").getString("giveConfigId");
                         int holdsNum = jo.optInt("holdsNum", 0);
                         String propName = jo.getJSONObject("propConfigVO").getString("propName");
@@ -546,14 +549,41 @@ final class AntForestProp {
     }
 
     static JSONArray getForestPropVOList() {
+        return getForestPropVOList(false);
+    }
+
+    /**
+     * 道具背包分页拉取：服务端首页只返回 12 个并下发 hasMore/nextCursor，
+     * 只查首页会看不到后面的道具，表现为「有能量雨卡却不用」「翻倍卡不用」。
+     *
+     * @param onlyGive true 表示只查可赠送的道具
+     */
+    static JSONArray getForestPropVOList(boolean onlyGive) {
         JSONArray forestPropVOList = new JSONArray();
         try {
-            JSONObject jo = new JSONObject(AntForestRpcCall.queryPropList(false));
-            if (MessageUtil.checkResultCode(TAG, jo)) {
-                JSONArray propList = jo.optJSONArray("forestPropVOList");
-                if (propList != null) {
-                    forestPropVOList = propList;
+            String nextCursor = "";
+            for (int page = 0; page < FOREST_PROP_MAX_PAGES; page++) {
+                JSONObject jo = new JSONObject(AntForestRpcCall.queryPropList(onlyGive, nextCursor));
+                if (!MessageUtil.checkResultCode(TAG, jo)) {
+                    break;
                 }
+                JSONArray list = jo.optJSONArray("forestPropVOList");
+                if (list == null || list.length() == 0) {
+                    break;
+                }
+                for (int i = 0; i < list.length(); i++) {
+                    forestPropVOList.put(list.get(i));
+                }
+                if (!jo.optBoolean("hasMore")) {
+                    break;
+                }
+                String cursor = jo.optString("nextCursor", "");
+                // nextCursor 不前进说明服务端没给出游标，继续查会拿到同一页
+                if (cursor.isEmpty() || cursor.equals(nextCursor)) {
+                    break;
+                }
+                nextCursor = cursor;
+                TimeUtil.sleep(FOREST_PROP_PAGE_INTERVAL);
             }
         } catch (Throwable th) {
             Log.err(TAG, "getForestPropVOList err:", th);

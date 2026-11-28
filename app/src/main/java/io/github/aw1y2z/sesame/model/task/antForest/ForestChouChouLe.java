@@ -13,6 +13,7 @@ import io.github.aw1y2z.sesame.data.task.TaskAttemptPolicy;
 import io.github.aw1y2z.sesame.data.task.TaskAward;
 import io.github.aw1y2z.sesame.data.task.TaskAttemptPolicy.Outcome;
 import io.github.aw1y2z.sesame.model.base.TaskAlternative;
+import io.github.aw1y2z.sesame.model.task.antGame.TaskAlternative.GameTask;
 import io.github.aw1y2z.sesame.util.Log;
 import io.github.aw1y2z.sesame.util.MessageUtil;
 import io.github.aw1y2z.sesame.util.Statistics;
@@ -242,8 +243,23 @@ public class ForestChouChouLe {
                             continue;
                         }
 
-                        //黑名单任务跳过
+                        //黑名单任务跳过（游戏/跳转第三方任务由 TaskAlternative 执行一次后跳过）
                         if (AntForestHuntTaskList.contains(taskName)) {
+                            TaskAlternative.handleGameTask(new GameTask("AntForestHuntTaskList",
+                                    taskName, desc,
+                                    //森林寻宝任务链接字段是 taskJumpUrl，兼容旧结构回落 targetUrl
+                                    TaskAlternative.firstNonEmpty(bizInfo.optString("targetUrl"),
+                                            bizInfo.optString("taskJumpUrl"), bizInfo.optString("link")), taskStatus)
+                                    .bizKey(taskType)
+                                    .rights(rightsTimes, rightsTimesLimit)
+                                    .taskRemain(Math.max(0, taskBaseInfo.optInt("taskRequire", 0)
+                                            - taskBaseInfo.optInt("taskProgress", 0)))
+                                    .taskPlayType(TaskAlternative.firstNonEmpty(taskBaseInfo.optString("taskPlayType"),
+                                            taskBaseInfo.optString("taskProdPlayType")))
+                                    .taskMode(taskBaseInfo.optString("taskMode"))
+                                    .taskSceneCode(taskSceneCode)
+                                    .scene(taskSceneCode, "ADBASICLIB")
+                                    .version(TaskAlternative.DEFAULT_VERSION));
                             continue;
                         }
 

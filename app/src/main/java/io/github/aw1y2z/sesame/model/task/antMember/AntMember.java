@@ -9,6 +9,7 @@ import io.github.aw1y2z.sesame.data.ModelFields;
 
 import io.github.aw1y2z.sesame.data.ModelGroup;
 import io.github.aw1y2z.sesame.data.modelFieldExt.BooleanModelField;
+import io.github.aw1y2z.sesame.data.modelFieldExt.IntegerModelField;
 import io.github.aw1y2z.sesame.data.modelFieldExt.SelectModelField;
 import io.github.aw1y2z.sesame.data.task.ModelTask;
 import io.github.aw1y2z.sesame.data.task.TaskAttemptPolicy;
@@ -24,6 +25,7 @@ import io.github.aw1y2z.sesame.util.idMap.GoldTicketTaskListMap;
 import io.github.aw1y2z.sesame.hook.ApplicationHook;
 import io.github.aw1y2z.sesame.model.base.TaskCommon;
 import io.github.aw1y2z.sesame.model.base.TaskAlternative;
+import io.github.aw1y2z.sesame.model.task.antGame.TaskAlternative.GameTask;
 import io.github.aw1y2z.sesame.model.extensions.ExtensionsHandle;
 import io.github.aw1y2z.sesame.model.task.antOrchard.AntOrchard;
 import io.github.aw1y2z.sesame.model.task.antOrchard.AntOrchardRpcCall;
@@ -102,6 +104,27 @@ public class AntMember extends BaseAntMember {
 
     private BooleanModelField KuaiDiFuLiJia;
 
+    /** 快递包裹游历：领裹粒橙 */
+    private BooleanModelField parcelJourney;
+
+    /** 芝麻信用金豆夺宝游戏：走 SesameAlchemy 的金豆链路 */
+    private BooleanModelField sesameAlchemyGoldBeanGame;
+
+    /** 芝麻炼金：消耗芝麻粒炼金 */
+    private BooleanModelField sesameAlchemy;
+    /** 芝麻炼金：签到 */
+    private BooleanModelField sesameAlchemySign;
+    /** 炼金金豆：任务签到领奖 */
+    private BooleanModelField sesameAlchemyGoldenBean;
+    /** 炼金金豆：芝麻粒换金豆 */
+    private BooleanModelField sesameAlchemyBeanExchange;
+    /** 炼金金豆：当日兑换芝麻粒上限(0不限制) */
+    private IntegerModelField sesameAlchemyBeanLimit;
+    /** 炼金金豆：剩余芝麻粒下限(0不限制) */
+    private IntegerModelField sesameAlchemyReserveZml;
+    /** 芝麻积分：宝箱 */
+    private BooleanModelField pointTreasureBox;
+
     /** 网商银行福利金 */
     private BooleanModelField welfareFund;
     private BooleanModelField welfareFundSign;
@@ -131,6 +154,15 @@ public class AntMember extends BaseAntMember {
         //modelFields.addField(promise = new BooleanModelField("promise", "生活记录 | 坚持做", false));
         //modelFields.addField(promiseList = new SelectModelField("promiseList", "生活记录 | 坚持做列表", new LinkedHashSet<>(), PromiseSimpleTemplate::getList));
         modelFields.addField(KuaiDiFuLiJia = new BooleanModelField("KuaiDiFuLiJia", "我的快递 | 福利加", false));
+        modelFields.addField(parcelJourney = new BooleanModelField("parcelJourney", "我的快递 | 包裹游历裹粒橙", false));
+        modelFields.addField(sesameAlchemyGoldBeanGame = new BooleanModelField("sesameAlchemyGoldBeanGame", "芝麻信用 | 金豆夺宝游戏", false));
+        modelFields.addField(sesameAlchemy = new BooleanModelField("sesameAlchemy", "芝麻炼金 | 消耗芝麻粒炼金", false));
+        modelFields.addField(sesameAlchemySign = new BooleanModelField("sesameAlchemySign", "芝麻炼金 | 签到", false));
+        modelFields.addField(sesameAlchemyGoldenBean = new BooleanModelField("sesameAlchemyGoldenBean", "炼金金豆 | 任务签到领奖", false));
+        modelFields.addField(sesameAlchemyBeanExchange = new BooleanModelField("sesameAlchemyBeanExchange", "炼金金豆 | 芝麻粒换金豆", false));
+        modelFields.addField(sesameAlchemyBeanLimit = new IntegerModelField("sesameAlchemyBeanLimit", "炼金金豆 | 当日兑换芝麻粒上限(0不限制)", 0, 0, null).setDependsOn("sesameAlchemyBeanExchange"));
+        modelFields.addField(sesameAlchemyReserveZml = new IntegerModelField("sesameAlchemyReserveZml", "炼金金豆 | 剩余芝麻粒下限(0不限制)", 0, 0, null).setDependsOn("sesameAlchemyBeanExchange"));
+        modelFields.addField(pointTreasureBox = new BooleanModelField("pointTreasureBox", "芝麻积分 | 宝箱", false));
         modelFields.addField(enableGoldTicketTask = new BooleanModelField("enableGoldTicketTask", "黄金票 | 开启", false));
         modelFields.addField(enableGoldTicketSign = new BooleanModelField("enableGoldTicketSign", "黄金票 | 签到", false).setDependsOn("enableGoldTicketTask"));
         modelFields.addField(enableGoldTicketConsume = new BooleanModelField("enableGoldTicketConsume", "黄金票 | 提取", false).setDependsOn("enableGoldTicketTask"));
@@ -229,16 +261,36 @@ public class AntMember extends BaseAntMember {
                 goldTicket();
             }
             if (enableGameCenter.getValue()) {
-                //检查并执行签到
-                checkAndDoSignIn();
-                //查询并处理任务列表
-                queryAndProcessTaskList();
-                //游戏中心任务奖励（整场景一键领取；游戏类任务需真实游玩才能推进，不做完成尝试）
+                // 游戏中心（签到/平台任务/乐豆/赚现金任务/抽金币）
+                GameCenter.run();
+                // 会员场景（xlyy_WJCNJT）宝箱领取：GameCenter 未覆盖这一步，单独补上
                 gameCenterTaskPrize();
-
-                //查询玩乐豆小球列表，有则领取
-                queryPointBallList();
-                
+            }
+            // 我的快递 | 包裹游历裹粒橙
+            if (parcelJourney.getValue()) {
+                ParcelJourney.runFromExtension();
+            }
+            // 芝麻炼金 + 炼金金豆夺宝（任务黑名单与农场金豆夺宝共用 GoldenBeansTaskList）
+            SesameAlchemy.setZhimaGameEnabled(sesameAlchemyGoldBeanGame.getValue());
+            if (sesameAlchemy.getValue() || sesameAlchemySign.getValue()
+                    || sesameAlchemyGoldenBean.getValue() || sesameAlchemyBeanExchange.getValue()
+                    || pointTreasureBox.getValue()) {
+                Set<String> goldenBeanList = null;
+                ModelFields goldenBeansFields = ConfigV2.INSTANCE.getModelFieldsMap().get("goldenbeans");
+                SelectModelField goldenBeansTaskList = goldenBeansFields == null ? null
+                        : (SelectModelField) goldenBeansFields.get("GoldenBeansTaskList");
+                if (goldenBeansTaskList != null) {
+                    goldenBeanList = goldenBeansTaskList.getValue();
+                }
+                SesameAlchemy.run(sesameAlchemy.getValue(), sesameAlchemySign.getValue(),
+                        sesameAlchemyGoldenBean.getValue(), goldenBeanList,
+                        sesameAlchemyBeanExchange.getValue(),
+                        sesameAlchemyBeanLimit.getValue() != null ? sesameAlchemyBeanLimit.getValue() : 0,
+                        sesameAlchemyReserveZml.getValue() != null ? sesameAlchemyReserveZml.getValue() : 0,
+                        pointTreasureBox.getValue());
+            } else if (sesameAlchemyGoldBeanGame.getValue()) {
+                // 仅开启「芝麻信用 | 金豆夺宝游戏」时，单独跑一次炼金金豆链路（含 ZHIMA 小游戏上报与领取）
+                SesameAlchemy.runGoldenBeanOnly();
             }
             if (welfareFund.getValue()) {
                 WelfareFund.run(welfareFundSign.getValue(), welfareFundTask.getValue(),
@@ -2097,8 +2149,19 @@ public class AntMember extends BaseAntMember {
             for (int i = 0; i < toCompleteVOS.length(); i++) {
                 JSONObject toCompleteVO = toCompleteVOS.getJSONObject(i);
                 String taskTitle = toCompleteVO.has("title") ? toCompleteVO.getString("title") : "未知任务";
-                //黑名单任务跳过
+                //黑名单任务跳过（游戏/跳转第三方任务由 TaskAlternative 执行一次后跳过）
                 if (MemberCreditSesameTaskList.getValue().contains(taskTitle)) {
+                    TaskAlternative.handleGameTask(new GameTask("MemberCreditSesameTaskList",
+                            taskTitle, toCompleteVO.optString("desc", ""),
+                            TaskAlternative.firstNonEmpty(toCompleteVO.optString("targetUrl"),
+                                    toCompleteVO.optString("taskJumpUrl"), toCompleteVO.optString("link")),
+                            toCompleteVO.optBoolean("finishFlag", false) ? "FINISHED" : "TODO")
+                            .bizKey(toCompleteVO.optString("templateId"))
+                            .taskPlayType(toCompleteVO.optString("taskPlayType", toCompleteVO.optString("taskProdPlayType")))
+                            .taskMode(toCompleteVO.optString("taskMode"))
+                            .taskSceneCode("zml")
+                            .scene("zml", "seasameList")
+                            .version("new"));
                     continue;
                 }
                 

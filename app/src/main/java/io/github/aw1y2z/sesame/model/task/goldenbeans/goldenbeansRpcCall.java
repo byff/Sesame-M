@@ -35,6 +35,15 @@ public class goldenbeansRpcCall {
     public static final String ALCHEMY_TASK_SCENE_CODE = "GOLDEN_BEAN_ZHIMA_LIST";
 
     public static final String VERSION = "20260803.01";
+    /**
+     * 任务列表专用的接口版本。
+     * <p>
+     * 20260803.01 的服务端响应只回 18 条任务、不含「从支付宝首页访问金豆」
+     * （GOLDEN_BEAN_TASK_CHANGYONGFANGWEN）；用 20261106.01 才回 19 条并带上该任务。
+     */
+    public static final String INDEX_VERSION = "20261106.01";
+    /** 常用来访任务：服务端在访问主页瞬间自动发奖，用首页入口 source 重访 index 触发 */
+    public static final String TASK_TYPE_CHANGYONG_FANGWEN = "GOLDEN_BEAN_TASK_CHANGYONGFANGWEN";
 
     // ===== 金豆商城（芭芭农场金豆罐兑换页） =====
     /** 商城场景码与主页任务场景不同，混用会被拒 */
@@ -86,12 +95,27 @@ public class goldenbeansRpcCall {
 
     /** 主页查询（指定入口） */
     public static String homeOf(String bizType, String source) throws Exception {
+        return homeOf(bizType, source, VERSION);
+    }
+
+    /** 主页查询（指定入口与接口版本） */
+    public static String homeOf(String bizType, String source, String version) throws Exception {
         JSONObject params = new JSONObject();
         params.put("bizType", bizType);
         params.put("darwinSceneList", new JSONArray());
         params.put("source", source);
-        params.put("version", VERSION);
+        params.put("version", version);
         return request("com.alipay.goldenbean.index", params);
+    }
+
+    /**
+     * 首页入口方式访问金豆主页。
+     * <p>
+     * 用于「从支付宝首页访问金豆」任务：服务端在访问瞬间自动发奖，
+     * 响应里的 {@code receptionAwardCount} 就是本次奖励，无需再调领取接口。
+     */
+    public static String homeFromAppHome() throws Exception {
+        return homeOf(FARM_BIZ_TYPE, "ch_appcenter__chsub_commonapp", INDEX_VERSION);
     }
 
     /** 数据同步（默认农场入口） */
@@ -101,6 +125,12 @@ public class goldenbeansRpcCall {
 
     /** 数据同步（指定入口） */
     public static String pullOf(String bizType, String source, String... syncTypes) throws Exception {
+        return pullOfVersion(bizType, source, VERSION, syncTypes);
+    }
+
+    /** 数据同步（指定入口与接口版本） */
+    public static String pullOfVersion(String bizType, String source, String version, String... syncTypes)
+            throws Exception {
         JSONArray typeList = new JSONArray();
         for (String type : syncTypes) {
             typeList.put(type);
@@ -109,7 +139,7 @@ public class goldenbeansRpcCall {
         params.put("bizType", bizType);
         params.put("source", source);
         params.put("syncTypeList", typeList);
-        params.put("version", VERSION);
+        params.put("version", version);
         return request("com.alipay.goldenbean.sync", params);
     }
 

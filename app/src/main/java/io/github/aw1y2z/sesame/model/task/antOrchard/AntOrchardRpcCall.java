@@ -177,6 +177,25 @@ public class AntOrchardRpcCall {
         return ApplicationHook.requestString("com.alipay.antieptask.receiveTaskAwardantorchard", args1);
     }
 
+    /**
+     * 领取农场任务奖励（不带 awardCountForReceive）。
+     *
+     * @param taskType 任务类型
+     * @param taskSceneCode 任务场景码，如 ANTORCHARD_DRAW_TIMES_TASK
+     */
+    public static String receiveTaskAwardantorchard(String taskType, String taskSceneCode) {
+        String args1 = "[{\"ignoreLimit\":true,\"requestType\":\"RPC\",\"sceneCode\":\"" + taskSceneCode + "\",\"source\":\"antorchard\",\"taskType\":\"" + taskType + "\"}]";
+        return ApplicationHook.requestString("com.alipay.antieptask.receiveTaskAwardantorchard", args1);
+    }
+
+    /**
+     * 农场抽抽乐任务列表（阿肥寻宝记等按次抽奖任务）。
+     */
+    public static String orchardDrawListTask() {
+        String args = "[{\"extend\":{\"appMode\":\"normal\"},\"requestType\":\"RPC\",\"sceneCode\":\"ANTORCHARD_DRAW_TIMES_TASK\",\"source\":\"antorchard\"}]";
+        return ApplicationHook.requestString("com.alipay.antieptask.listTaskantorchard", args);
+    }
+
     /* ============ 农场抽抽乐（阿肥寻宝记 / 农场抽抽乐普通版） ============ */
 
     /**

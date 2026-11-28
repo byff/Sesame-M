@@ -15,6 +15,10 @@ import io.github.aw1y2z.sesame.data.task.TaskAttemptPolicy;
 import io.github.aw1y2z.sesame.data.task.TaskAward;
 import io.github.aw1y2z.sesame.data.task.TaskAttemptPolicy.Outcome;
 import io.github.aw1y2z.sesame.model.base.TaskAlternative;
+import io.github.aw1y2z.sesame.model.normal.base.BaseModel;
+import io.github.aw1y2z.sesame.model.task.antGame.GameTask;
+import io.github.aw1y2z.sesame.model.task.antGame.MiniGameVendorReporter;
+import io.github.aw1y2z.sesame.model.task.antMember.GameCenterMiniGameReporter;
 import io.github.aw1y2z.sesame.util.Log;
 import io.github.aw1y2z.sesame.util.MessageUtil;
 import io.github.aw1y2z.sesame.util.Status;
@@ -240,8 +244,12 @@ public final class GoldenBeansTasks {
     private boolean runTaskList(GoldenBeansEntry entry, int interval) {
         boolean unresolved = false;
         try {
-            JSONObject syncJo = GoldenBeansSupport.parse(goldenbeansRpcCall.pullOf(
-                    entry.bizType, entry.source, "FARM_TASK", "TASK_LIST"));
+            // 农场入口用新版接口版本拉列表：旧版本服务端只回 18 条任务，
+            // 缺「从支付宝首页访问金豆」这一条
+            String version = entry == GoldenBeansEntry.FARM
+                    ? goldenbeansRpcCall.INDEX_VERSION : goldenbeansRpcCall.VERSION;
+            JSONObject syncJo = GoldenBeansSupport.parse(goldenbeansRpcCall.pullOfVersion(
+                    entry.bizType, entry.source, version, "FARM_TASK", "TASK_LIST"));
             if (!GoldenBeansSupport.ok(syncJo)) {
                 Log.goldenBeans("金豆[" + entry.alias + "]任务⚠️列表查询失败["
                         + GoldenBeansSupport.describe(syncJo) + "]");
@@ -304,6 +312,19 @@ public final class GoldenBeansTasks {
                 }
 
                 if (STATUS_TODO.equals(taskStatus)) {
+                    // 常用来访任务：服务端在访问主页的瞬间自动发奖，没有领取接口，
+                    // 用首页入口 source 重访 index 触发
+                    if (goldenbeansRpcCall.TASK_TYPE_CHANGYONG_FANGWEN.equals(taskId)) {
+                        visitFromAppHome(entry, taskName);
+                        continue;
+                    }
+                    // GAME_ZH 玩游戏类任务：客户端没有上报通道时无法自动完成，
+                    // 优先按厂商适配表走真实上报（能补上就补）；补不上再走下面的常规完成流程
+                    JSONObject displayConfig = task.optJSONObject("taskDisplayConfig");
+                    if (displayConfig != null && "GAME_ZH".equals(displayConfig.optString("type"))
+                            && handleGameZhTask(entry, task, taskId, taskName, displayConfig)) {
+                        continue;
+                    }
                     // 底线：付款类/交易类一律不申报、一次即**永久**拉黑
                     // （原先只"跳过"：不写黑名单，解禁周期外还会反复回到待办）
                     if (isPayTask(taskId) || TaskAlternative.isTransactionTask(taskId)) {
@@ -414,6 +435,192 @@ public final class GoldenBeansTasks {
         }
         String upper = taskId.toUpperCase();
         return upper.contains("ZHIFU") || upper.contains("_PAY");
+    }
+
+    /**
+     * 常用来访任务：用首页入口 source 重访金豆主页，服务端在访问瞬间自动发奖，
+     * 响应里的 {@code receptionAwardCount} 就是本次奖励（没有领取接口）。
+     */
+    private void visitFromAppHome(GoldenBeansEntry entry, String taskName) {
+        try {
+            String flag = "goldenBeans::changYongFangWen::" + entry.alias;
+            if (Status.hasFlagToday(flag)) {
+                return;
+            }
+            Status.flagToday(flag);
+            JSONObject jo = GoldenBeansSupport.parse(goldenbeansRpcCall.homeFromAppHome());
+            if (GoldenBeansSupport.ok(jo)) {
+                int awardCount = jo.optInt("receptionAwardCount", 0);
+                if (awardCount > 0) {
+                    Log.goldenBeans("金豆[" + entry.alias + "]任务🏠常用来访[" + taskName
+                            + "]#获得[" + awardCount + "金豆]");
+                }
+            }
+        } catch (Throwable th) {
+            Log.i(GoldenBeansSupport.TAG, "visitFromAppHome err:");
+            Log.printStackTrace(GoldenBeansSupport.TAG, th);
+        }
+    }
+
+    /**
+     * GAME_ZH 玩游戏类任务：客户端没有上报通道时无法自己完成。
+     * <p>
+     * 处理顺序：已知游戏走 gamesapi2 真实上报 → 静态适配表里的游戏按动作码补报 →
+     * 都不行则提示真人玩一次（每天只提示一次）。
+     *
+     * @return true=已由上报通道处理（不再走常规完成流程），false=交回常规流程
+     */
+    private boolean handleGameZhTask(GoldenBeansEntry entry, JSONObject task, String taskId, String taskName,
+                                     JSONObject displayConfig) {
+        try {
+            String desc = displayConfig.optString("desc", "");
+            String targetUrl = displayConfig.optString("targetUrl", "");
+            int done = task.optInt("rightsTimes", 0);
+            int limit = task.optInt("rightsTimesLimit", 0);
+            if (BaseModel.isMiniGameTaskDisallowed(taskName, desc, "GoldenBeansTaskList")) {
+                return true;
+            }
+            String appId = appIdOf(targetUrl);
+            Log.goldenBeans("金豆[" + entry.alias + "]任务🎮[" + taskName + "]状态=TODO 进度=" + done + "/" + limit
+                    + " 游戏=" + (appId.isEmpty() ? "?" : appId));
+            if (handleKnownGameByReport(entry, taskId, taskName)) {
+                return true;
+            }
+            if (handleGameZhVendorReport(entry, taskId, appId, taskName, done, limit)) {
+                return true;
+            }
+            String manualFlag = "goldenBeans::manual::" + taskId;
+            if (!Status.hasFlagToday(manualFlag)) {
+                Log.goldenBeans("金豆[" + entry.alias + "]任务🎮[" + taskName
+                        + "]#需真人玩一次（客户端没有该游戏的上报通道），玩完后模块会自动领奖");
+                Status.flagToday(manualFlag);
+            }
+            // 上报通道都没有：交回常规完成流程（走兜底申报方案）
+            return false;
+        } catch (Throwable th) {
+            Log.i(GoldenBeansSupport.TAG, "handleGameZhTask err:");
+            Log.printStackTrace(GoldenBeansSupport.TAG, th);
+            return false;
+        }
+    }
+
+    /**
+     * 已知游戏走 gamesapi2 真实上报（渠道固定 goldenbean）。
+     * <p>
+     * 农场上车车/金豆乐园由金豆乐园流程统一上报，此处跳过避免重复。
+     *
+     * @return 是否已处理（已上报或明确交由其它流程）
+     */
+    private boolean handleKnownGameByReport(GoldenBeansEntry entry, String taskId, String title) {
+        try {
+            String flag = "goldenBeans::game::" + taskId;
+            if (Status.hasFlagToday(flag)) {
+                return true;
+            }
+            GameTask game;
+            int eggCount;
+            if (title.contains("对对碰乐园")) {
+                game = GameTask.GoldenBean_ddply;
+                eggCount = Math.max(1, extractNumber(title) / 10);
+            } else if (title.contains("森林小车车")) {
+                game = GameTask.GoldenBean_slxcc;
+                eggCount = Math.max(1, extractNumber(title) / 20);
+            } else if (title.contains("森林救援队")) {
+                game = GameTask.GoldenBean_sljyd;
+                eggCount = Math.max(1, extractNumber(title) / 30);
+            } else if (title.contains("农场上车车") || title.contains("金豆乐园")) {
+                // 金豆乐园流程已统一上报此处涉及的游戏，跳过避免重复
+                return true;
+            } else {
+                return false;
+            }
+            Log.goldenBeans("金豆[" + entry.alias + "]任务🎮[" + title + "]走gamesapi2上报#目标[" + eggCount + "]");
+            int successes = game.reportSync("金豆任务:" + title, eggCount,
+                    goldenbeansRpcCall.GAME_CHANNEL);
+            if (successes > 0) {
+                Status.flagToday(flag);
+                return true;
+            }
+            return false;
+        } catch (Throwable th) {
+            Log.i(GoldenBeansSupport.TAG, "handleKnownGameByReport err:");
+            Log.printStackTrace(GoldenBeansSupport.TAG, th);
+            return false;
+        }
+    }
+
+    /**
+     * GAME_ZH 通用厂商上报：静态适配表里登记了 SDK 族的游戏按动作码直接补报；
+     * 适配表没有时回落到游戏中心的厂家表，两者都没有则返回 false。
+     */
+    private boolean handleGameZhVendorReport(GoldenBeansEntry entry, String taskId, String appId, String title,
+                                             int done, int limit) {
+        if (appId == null || appId.isEmpty()) {
+            return false;
+        }
+        if (!MiniGameVendorReporter.supports(appId)) {
+            GameCenterMiniGameReporter.Spec gcSpec = GameCenterMiniGameReporter.specOf(appId);
+            if (gcSpec == null || gcSpec.action == null || gcSpec.action.isEmpty()) {
+                return false;
+            }
+            String flag = "goldenBeans::gc::" + taskId;
+            if (Status.hasFlagToday(flag)) {
+                return true;
+            }
+            int needGc = Math.max(1, limit - done);
+            Log.goldenBeans("金豆[" + entry.alias + "]任务🎮[" + title + "]走游戏中心厂商表：" + gcSpec.title
+                    + " action=" + gcSpec.action + " 次数=" + needGc);
+            GameCenterMiniGameReporter.setChannelOverride(goldenbeansRpcCall.GAME_CHANNEL);
+            int okGc = GameCenterMiniGameReporter.report(gcSpec, needGc);
+            GameCenterMiniGameReporter.setChannelOverride(null);
+            if (okGc > 0) {
+                Status.flagToday(flag);
+                return true;
+            }
+            return false;
+        }
+        String flag = "goldenBeans::vendor::" + taskId;
+        if (Status.hasFlagToday(flag)) {
+            return true;
+        }
+        String action = MiniGameVendorReporter.resolveAction(appId, title);
+        if (action == null || action.isEmpty()) {
+            Log.goldenBeans("金豆[" + entry.alias + "]任务🎮[" + title
+                    + "]适配表有厂商但匹配不到动作码#跳过");
+            return false;
+        }
+        int need = Math.max(1, limit - done);
+        Log.goldenBeans("金豆[" + entry.alias + "]任务🎮[" + title + "]走厂商上报："
+                + MiniGameVendorReporter.sdkName(appId) + " action=" + action + " 次数=" + need);
+        MiniGameVendorReporter.report(appId, title, goldenbeansRpcCall.GAME_CHANNEL, action, need,
+                "GoldenBeansTaskList");
+        Status.flagToday(flag);
+        return true;
+    }
+
+    /** 从 targetUrl 里取 appId（形如 appId=2060170000362587） */
+    private static String appIdOf(String targetUrl) {
+        try {
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("[?&]appId=(\\d+)")
+                    .matcher(targetUrl == null ? "" : targetUrl);
+            if (m.find()) {
+                return m.group(1);
+            }
+        } catch (Throwable ignored) {
+        }
+        return "";
+    }
+
+    /** 从文本提取第一个数字（游戏任务需求量，如「玩2组」取 2） */
+    private static int extractNumber(String text) {
+        try {
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d+)").matcher(text);
+            if (m.find()) {
+                return Integer.parseInt(m.group(1));
+            }
+        } catch (Throwable ignored) {
+        }
+        return 0;
     }
 
     private boolean finishTask(GoldenBeansEntry entry, String taskId, String taskName, int stage,

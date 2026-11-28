@@ -15,6 +15,12 @@ public abstract class IdAndName implements Comparable<IdAndName> {
     @Getter
     public String id;
 
+    /**
+     * 任务图标地址（仅任务清单类实体使用；null 表示无图标，Jackson NON_NULL 不参与序列化）
+     */
+    @Getter
+    public String icon;
+
     private ArrayList<String> pinyin;
 
     @JsonIgnore

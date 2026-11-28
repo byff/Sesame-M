@@ -25,7 +25,16 @@ public enum GameTask {
     Orchard_ncscc("农场上车车", "2060170000356601", "zfb_ncscc", "ncscc_game_kaiche_every_10", "nongchangleyuan", "1.0.2", 2),
     Farm_ddply("对对碰乐园", "2021004149679303", "zfb_ddply", "ddply_game_xiaochu_every_5", "zhuangyuan", "1.0.14", 2),
     Forest_slxcc("森林小车车", "2060170000363691", "zfb_slxcc", "slxcc_game_kaiche_every_10", "lianyun_senlin_leyuan", "1.0.1", 3),
-    Forest_sljyd("森林救援队(能量雨)", "2021005113684028", "zfb_sljydx", "sljyd_game_xiaochu_every_10", "lianyun_senlin_leyuan", "1.0.1", 3);
+    Forest_sljyd("森林救援队(能量雨)", "2021005113684028", "zfb_sljydx", "sljyd_game_xiaochu_every_10", "lianyun_senlin_leyuan", "1.0.1", 3),
+    /**
+     * 金豆乐园：复用农场/庄园同款游戏，channel=goldenbean，用于刷金豆砸蛋机会。
+     * <p>与上面 4 个的 appId 相同、仅上报渠道不同，故必须排在它们之后——
+     * {@link #matchAppId(String)} 按声明顺序返回首个匹配项。
+     */
+    GoldenBean_ncscc("农场上车车", "2060170000356601", "zfb_ncscc", "ncscc_game_kaiche_every_10", "goldenbean", "1.0.2", 2),
+    GoldenBean_ddply("对对碰乐园", "2021004149679303", "zfb_ddply", "ddply_game_xiaochu_every_5", "goldenbean", "1.0.14", 4),
+    GoldenBean_slxcc("森林小车车", "2060170000363691", "zfb_slxcc", "slxcc_game_kaiche_every_10", "goldenbean", "1.0.1", 2),
+    GoldenBean_sljyd("森林救援队", "2021005113684028", "zfb_sljydx", "sljyd_game_xiaochu_every_10", "goldenbean", "1.0.1", 3);
 
     private final String title;
     private final String appId;

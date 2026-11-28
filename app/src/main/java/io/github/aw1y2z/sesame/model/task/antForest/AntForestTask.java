@@ -23,6 +23,7 @@ import io.github.aw1y2z.sesame.data.task.TaskAward;
 import io.github.aw1y2z.sesame.entity.AlipayAntForestVitalityTaskList;
 import io.github.aw1y2z.sesame.model.base.TaskAlternative;
 import io.github.aw1y2z.sesame.model.task.antFarm.AntFarm.TaskStatus;
+import io.github.aw1y2z.sesame.model.task.antGame.TaskAlternative.GameTask;
 import io.github.aw1y2z.sesame.util.Log;
 import io.github.aw1y2z.sesame.util.MessageUtil;
 import io.github.aw1y2z.sesame.util.Statistics;
@@ -530,8 +531,24 @@ final class AntForestTask {
                         doubleCheck = true;
                     }
                 } else if (TaskStatus.TODO.name().equals(taskStatus)) {
-                    //黑名单任务跳过
+                    //黑名单任务跳过（游戏/跳转第三方任务由 TaskAlternative 执行一次后跳过）
                     if (getVitalityTaskBlackList().contains(taskTitle)) {
+                        TaskAlternative.handleGameTask(new GameTask("AntForestVitalityTaskList",
+                                taskTitle, TaskAlternative.firstNonEmpty(bizInfo.optString("desc"),
+                                        bizInfo.optString("taskDesc")),
+                                TaskAlternative.firstNonEmpty(bizInfo.optString("targetUrl"),
+                                        bizInfo.optString("taskJumpUrl"), bizInfo.optString("link")),
+                                taskStatus)
+                                .bizKey(taskType)
+                                .rights(taskInfo.optInt("rightsTimes", 0), taskInfo.optInt("rightsTimesLimit", 0))
+                                .taskRemain(Math.max(0, taskBaseInfo.optInt("taskRequire", 0)
+                                        - taskBaseInfo.optInt("taskProgress", 0)))
+                                .taskPlayType(TaskAlternative.firstNonEmpty(taskBaseInfo.optString("taskPlayType"),
+                                        taskBaseInfo.optString("taskProdPlayType")))
+                                .taskMode(taskBaseInfo.optString("taskMode"))
+                                .taskSceneCode(sceneCode)
+                                .scene(sceneCode, "ANTFOREST")
+                                .version(TaskAlternative.DEFAULT_VERSION));
                         continue;
                     }
                     // 周期/持续型任务：由真实行为推进、常驻列表且无 RPC 可完成，跳过（不尝试、不拉黑）

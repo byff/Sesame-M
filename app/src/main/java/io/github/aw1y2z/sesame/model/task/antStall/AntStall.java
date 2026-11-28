@@ -19,6 +19,7 @@ import io.github.aw1y2z.sesame.entity.AlipayUser;
 import io.github.aw1y2z.sesame.model.base.TaskCommon;
 import io.github.aw1y2z.sesame.model.base.TaskAlternative;
 import io.github.aw1y2z.sesame.model.task.antFarm.AntFarm.TaskStatus;
+import io.github.aw1y2z.sesame.model.task.antGame.TaskAlternative.GameTask;
 import io.github.aw1y2z.sesame.model.task.readingDada.ReadingDada;
 import io.github.aw1y2z.sesame.util.*;
 import io.github.aw1y2z.sesame.util.idMap.AntStallTaskListMap;
@@ -661,8 +662,22 @@ public class AntStall extends ModelTask {
                 String taskType = task.getString("taskType");
                 JSONObject bizInfo = new JSONObject(task.getString("bizInfo"));
                 String title = bizInfo.getString("title");
-                //黑名单任务跳过
+                //黑名单任务跳过（游戏/跳转第三方任务由 TaskAlternative 执行一次后跳过）
                 if (AntStallTaskList.getValue().contains(title)) {
+                    TaskAlternative.handleGameTask(new GameTask("AntStallTaskList",
+                            title, TaskAlternative.firstNonEmpty(bizInfo.optString("desc"),
+                            bizInfo.optString("taskDesc")),
+                            TaskAlternative.firstNonEmpty(bizInfo.optString("targetUrl"),
+                            bizInfo.optString("taskJumpUrl"), bizInfo.optString("link")), taskStatus)
+                            .bizKey(taskType)
+                            .rights(task.optInt("rightsTimes", 0), task.optInt("rightsTimesLimit", 0))
+                            .taskRemain(Math.max(0, task.optInt("taskRequire", 0) - task.optInt("taskProgress", 0)))
+                            .taskPlayType(TaskAlternative.firstNonEmpty(task.optString("taskPlayType"),
+                            task.optString("taskProdPlayType")))
+                            .taskMode(task.optString("taskMode"))
+                            .taskSceneCode("ANTSTALL_TASK")
+                            .scene("ANTSTALL_TASK", "AST")
+                            .version(AntStallRpcCall.VERSION));
                     continue;
                 }
                 

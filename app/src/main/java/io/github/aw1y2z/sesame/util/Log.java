@@ -281,6 +281,22 @@ public class Log {
         runtimeWrite(s);
     }
 
+    /**
+     * 信息记录：模块一轮结束时输出的一行概况（如「游戏中心🎮[账号1]金币:120;今日签到:已签」）。
+     * <p>只写运行日志，不写模块分类文件——它是汇总行，不属于某个模块的「动作记录」，
+     * 写进分类文件会污染动作计数（模块汇总会误判本轮有操作）。
+     */
+    public static void info(String s) {
+        runtimeWrite(s);
+    }
+
+    /**
+     * 信息记录里的数值展示：null（接口失败/字段缺失）显示空格，读到真实值（含 0）正常显示。
+     */
+    public static String n(Integer value) {
+        return value == null ? " " : Integer.toString(value);
+    }
+
     public static void i(String tag, String s) {
         i(tag + ", " + s);
     }

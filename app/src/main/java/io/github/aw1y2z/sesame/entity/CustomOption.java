@@ -56,6 +56,7 @@ public class CustomOption extends IdAndName {
         list.add(new CustomOption("deliverMsgSend", "道早安"));
         list.add(new CustomOption("assignRights", "顶梁柱"));
         list.add(new CustomOption("shareToFriends", "分享给好友"));
+        list.add(new CustomOption("familyTaskAward", "三次请客等任务"));
         return list;
     }
 

@@ -37,6 +37,7 @@ import io.github.aw1y2z.sesame.hook.Toast;
 import io.github.aw1y2z.sesame.model.base.TaskCommon;
 import io.github.aw1y2z.sesame.model.base.TaskAlternative;
 import io.github.aw1y2z.sesame.model.extensions.ExtensionsHandle;
+import io.github.aw1y2z.sesame.model.task.antMember.YouthPrivilege;
 import io.github.aw1y2z.sesame.model.normal.base.BaseModel;
 import io.github.aw1y2z.sesame.rpc.intervallimit.FixedOrRangeIntervalLimit;
 import io.github.aw1y2z.sesame.rpc.intervallimit.RpcIntervalLimit;
@@ -272,7 +273,7 @@ public class AntForestV2 extends ModelTask {
         modelFields.addField(marketBrowseTask = new BooleanModelField("marketBrowseTask", "绿植浏览", false));
         modelFields.addField(greenRent = new BooleanModelField("greenRent", "绿色租赁", false));
         modelFields.addField(readForest = new BooleanModelField("readForest", "无纸阅读", false));
-        modelFields.addField(youthPrivilege = new BooleanModelField("youthPrivilege", "青春特权 | 森林道具", false));
+        modelFields.addField(youthPrivilege = new BooleanModelField("youthPrivilege", "青春特权 | 森林道具/签到/任务/抽奖", false));
         modelFields.addField(ecoLife = new BooleanModelField("ecoLife", "绿色行动 | 开启", false));
         modelFields.addField(ecoLifeOptions = new SelectModelField("ecoLifeOptions", "绿色行动 | 选项", new LinkedHashSet<>(), CustomOption::getEcoLifeOptions, "光盘行动需要先手动完成一次").setDependsOn("ecoLife"));
         AntForestTeam.addFields(modelFields);
@@ -373,6 +374,8 @@ public class AntForestV2 extends ModelTask {
                     // 青春特权道具（大学生双击卡/能量罩/加速器）与「森林任务」共用同一套实现，
                     // 由 queryTaskList 内部按 vitalityTask::<firstTaskType> 逐任务标记
                     AntForestTask.queryVitalityYouthTaskList();
+                    // 青春特权其余能力（签到青春豆 / 青春任务 / 青春豆十连抽），与森林道具共用本开关
+                    YouthPrivilege.runFromExtension();
                 }
                 //连续兑换使用道具卡片
                 prop.continuousUseCardOptions();

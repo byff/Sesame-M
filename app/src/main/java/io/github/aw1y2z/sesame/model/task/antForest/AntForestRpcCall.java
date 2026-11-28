@@ -199,6 +199,38 @@ public class AntForestRpcCall {
                 "[{\"ignoreLimit\":false,\"requestType\":\"RPC\",\"sceneCode\":\"ANTFOREST_VITALITY_TASK\",\"source\":\""
                         + source + "\",\"taskType\":\"" + taskType + "\"}]");
     }
+
+    /**
+     * 青春特权道具任务列表（来源 chInfo_ch_appcenter__chsub_9patch）。
+     *
+     * @param firstTaskType 任务类型，如 DNHZ_SL_college（双击卡）/ DXS_BHZ（保护罩）/ DXS_JSQ（加速器）
+     */
+    public static String queryTaskListV2(String firstTaskType) {
+        String args = "[{\"extend\":{\"firstTaskType\":\"" + firstTaskType + "\",\"businessSource\":\"ANTFOREST-home_task_list\",\"osType\":\"android\",\"version\":\"20260109\"},\"requestType\":\"RPC\",\"sceneCode\":\"ANTFOREST_VITALITY_TASK\",\"source\":\"chInfo_ch_appcenter__chsub_9patch\"}]";
+        return ApplicationHook.requestString("com.alipay.antieptask.listTaskopengreen", args);
+    }
+
+    /**
+     * 领取青春特权道具奖励。
+     *
+     * @param taskType 奖励任务类型，如 DAXUESHENG_SJK / NENGLIANGZHAO_20230807 / JIASUQI_20230808
+     */
+    public static String receiveTaskAwardV2(String taskType) {
+        String args = "[{\"ignoreLimit\":false,\"requestType\":\"H5\",\"sceneCode\":\"ANTFOREST_VITALITY_TASK\",\"taskType\":\"" + taskType + "\",\"source\":\"ANTFOREST\"}]";
+        return ApplicationHook.requestString("com.alipay.antiep.receiveTaskAward", args);
+    }
+
+    /** 青春特权学生签到：查询当日签到模型（含是否已签、可领奖励） */
+    public static String studentQqueryCheckInModel() {
+        String args = "[{\"chInfo\":\"ch_appcollect__chsub_my-recentlyUsed\",\"skipTaskModule\":false}]";
+        return ApplicationHook.requestString("alipay.membertangram.biz.rpc.student.queryCheckInModel", args);
+    }
+
+    /** 青春特权学生签到：执行签到领红包 */
+    public static String studentCheckin() {
+        String args = "[{\"source\":\"chInfo_ch_appcenter__chsub_9patch\"}]";
+        return ApplicationHook.requestString("alipay.membertangram.biz.rpc.student.checkIn", args);
+    }
     
     public static String queryEnergyRainHome() {
         return ApplicationHook.requestString("alipay.antforest.forest.h5.queryEnergyRainHome", "[{\"version\":\"" + VERSION + "\"}]");
@@ -298,7 +330,21 @@ public class AntForestRpcCall {
     }
     
     public static String queryPropList(boolean onlyGive) {
-        return ApplicationHook.requestString("alipay.antforest.forest.h5.queryPropList", "[{\"onlyGive\":\"" + (onlyGive ? "Y" : "") + "\",\"source\":\"chInfo_ch_appcenter__chsub_9patch\"," + "\"version\":\"" + VERSION + "\"}]");
+        return queryPropList(onlyGive, "");
+    }
+
+    /**
+     * 道具背包分页查询：服务端首页只返回 12 个并下发 hasMore/nextCursor，
+     * 不带 nextCursor 继续查就只能看到第一页，表现为「没有能量雨卡/翻倍卡」。
+     *
+     * @param nextCursor 上一页响应里的 nextCursor，为空表示查第一页
+     */
+    public static String queryPropList(boolean onlyGive, String nextCursor) {
+        String args = "[{\"onlyGive\":\"" + (onlyGive ? "Y" : "") + "\""
+                + (StringUtil.isEmpty(nextCursor) ? "" : ",\"nextCursor\":\"" + nextCursor + "\"")
+                + ",\"pageQuery\":true,\"source\":\"chInfo_ch_appcenter__chsub_9patch\","
+                + "\"version\":\"" + VERSION + "\"}]";
+        return ApplicationHook.requestString("alipay.antforest.forest.h5.queryPropList", args);
     }
     
     // 查询可派遣伙伴（分页，nextCursor 为空查第一页）

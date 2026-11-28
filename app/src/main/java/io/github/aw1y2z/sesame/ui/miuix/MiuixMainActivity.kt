@@ -971,6 +971,12 @@ fun ConfigTab(activity: MiuixMainActivity) {
     // 模块功能：全局配置（不分账号），与上面的「按账号配置」并列放在配置页更合理
     SmallTitle(text = "模块功能")
     CardColumn {
+        // 多账号切换相关配置都是全局的，集中在这一处设置，不再分散到每个账号的独立设置里
+        ArrowPreference(
+            title = "多账号切换",
+            summary = "自动切号、账号顺序、常态保持账号等（全局生效）",
+            onClick = { context.startActivity(Intent(context, MiuixAccountSwitchActivity::class.java)) }
+        )
         // 这几项原先是「按账号」存在账号配置里，现改为全局配置 AppConfig（模块级，不分账号）
         var newRpc by remember { mutableStateOf(AppConfig.INSTANCE.newRpc ?: true) }
         BooleanSwitch("使用新接口", newRpc, summary = "最低支持 v10.3.96.8100") {
@@ -1047,12 +1053,6 @@ fun SettingsTab(activity: MiuixMainActivity) {
 
     SmallTitle(text = "功能设置")
     CardColumn {
-        // 多账号切换相关配置都是全局的，集中在这一处设置，不再分散到每个账号的独立设置里
-        ArrowPreference(
-            title = "多账号切换",
-            summary = "自动切号、账号顺序、常态保持账号等（全局生效）",
-            onClick = { context.startActivity(Intent(context, MiuixAccountSwitchActivity::class.java)) }
-        )
         ArrowPreference(
             title = "好友统计",
             onClick = { context.startActivity(Intent(context, MiuixFriendStatsActivity::class.java)) }

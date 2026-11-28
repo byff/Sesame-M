@@ -9,6 +9,7 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 import io.github.aw1y2z.sesame.hook.ApplicationHook;
+import io.github.aw1y2z.sesame.model.task.antGame.TaskAlternative.GameTask;
 import io.github.aw1y2z.sesame.util.Log;
 import io.github.aw1y2z.sesame.util.MessageUtil;
 import io.github.aw1y2z.sesame.util.Status;
@@ -183,6 +184,57 @@ public final class TaskAlternative {
     public static boolean hit(JSONObject failJo, String taskSceneCode) {
         return taskSceneCode != null && !taskSceneCode.trim().isEmpty()
                 && MessageUtil.isUnsupportedRpc(failJo);
+    }
+
+    /** 单任务单次执行最多推进的档数，避免 rightsTimesLimit 是计数上限（如 100000）时海量调用。 */
+    private static final int MAX_RIGHTS_PER_TASK = 20;
+
+    /**
+     * 本次应推进的档数：rights 未满时取差值；无 rights 或明显是计数上限（如 100000）时按 1 次。
+     * <p>「请客 3 次」这类多档任务要按差值循环完成，否则只完成一档就领不到奖励。
+     */
+    public static int rightsTimesToDo(int rightsTimes, int rightsTimesLimit) {
+        if (rightsTimesLimit <= 0 || rightsTimesLimit <= rightsTimes) {
+            return 1;
+        }
+        if (rightsTimesLimit > MAX_RIGHTS_PER_TASK) {
+            // 这类是使用次数/累计次数上限，不是可循环完成的档位，避免重复提交
+            return 1;
+        }
+        return rightsTimesLimit - rightsTimes;
+    }
+
+    /** 多档任务完成日志的进度后缀，如（1/3）、（2/3）、（3/3）；单档、无 rights 或计数上限返回空串。 */
+    public static String rightsProgressText(int rightsTimes, int rightsTimesLimit, int doneIndex) {
+        if (rightsTimesLimit <= 1 || rightsTimesLimit > MAX_RIGHTS_PER_TASK) {
+            return "";
+        }
+        int done = Math.min(rightsTimesLimit, Math.max(1, rightsTimes + doneIndex + 1));
+        return "（" + done + "/" + rightsTimesLimit + "）";
+    }
+
+    /**
+     * 游戏任务统一入口（转发到 {@code model.task.antGame.TaskAlternative}）。
+     *
+     * <p>本类与 {@code antGame} 包里的同名类是两套实现：本类是「完成接口被拒后的兜底伪申报」，
+     * 那套是「按跳转链接进游戏/第三方完成」。各模块已统一 import 本类，故在此转出一层，
+     * 避免模块侧出现两个同名 {@code TaskAlternative} 的导入冲突。
+     */
+    public static boolean handleGameTask(GameTask task) {
+        return io.github.aw1y2z.sesame.model.task.antGame.TaskAlternative.handleGameTask(task);
+    }
+
+    /** 取第一个非空字符串（全为空返回空串）。 */
+    public static String firstNonEmpty(String... values) {
+        if (values == null) {
+            return "";
+        }
+        for (String v : values) {
+            if (v != null && !v.trim().isEmpty()) {
+                return v;
+            }
+        }
+        return "";
     }
 
     /** version 取 {@link #DEFAULT_VERSION}。 */

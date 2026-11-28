@@ -8,7 +8,10 @@ import io.github.aw1y2z.sesame.util.MessageUtil;
 
 public class AntSportsRpcCall {
     private static final String chInfo = "ch_appcenter__chsub_9patch", timeZone = "Asia/Shanghai", version = "3.0.1" + ".2", alipayAppVersion = "0.0.852", cityCode = "330100", appId = "2021002116659397";
-    
+
+    /** 运动任务 RPC 版本号。 */
+    public static final String VERSION = "3.0.1.2";
+
     // 运动任务查询
     // {"apiVersion":"energy","canAddHome":false,"chInfo":"medical_health","clientAuthStatus":"not_support",
     // "clientOS":"android","features":["DAILY_STEPS_RANK_V2","STEP_BATTLE","CLUB_HOME_CARD","NEW_HOME_PAGE_STATIC",

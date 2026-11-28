@@ -13,7 +13,7 @@ import io.github.aw1y2z.sesame.util.StringUtil;
  */
 public class AntOceanRpcCall {
     //private static final String VERSION = "20230901";
-    private static final String VERSION = "20241203";
+    public static final String VERSION = "20241203";
     
     public static String getUniqueId() {
         return String.valueOf(System.currentTimeMillis()) + RandomUtil.nextLong();

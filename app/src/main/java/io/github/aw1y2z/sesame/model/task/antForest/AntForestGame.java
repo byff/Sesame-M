@@ -666,8 +666,23 @@ public final class AntForestGame {
                     String awardKey = "forest::optionalplay::award::" + sceneCode + "/" + taskType
                             + "#" + rightsTimes;
 
-                    // 黑名单任务跳过
+                    // 黑名单任务跳过（游戏/跳转第三方任务由 TaskAlternative 执行一次后跳过）
                     if (blackList != null && blackList.contains(title)) {
+                        TaskAlternative.handleGameTask(new io.github.aw1y2z.sesame.model.task.antGame.TaskAlternative.GameTask(
+                                "AntForestVitalityTaskList", title,
+                                TaskAlternative.firstNonEmpty(bizInfo.optString("taskDesc"), bizInfo.optString("desc")),
+                                TaskAlternative.firstNonEmpty(bizInfo.optString("targetUrl"),
+                                        bizInfo.optString("taskJumpUrl"), bizInfo.optString("link")),
+                                taskStatus)
+                                .bizKey(taskType)
+                                .rights(rightsTimes, rightsTimesLimit)
+                                .taskRemain(task.optInt("taskRemain", 0))
+                                .taskPlayType(TaskAlternative.firstNonEmpty(task.optString("taskPlayType"),
+                                        task.optString("taskProdPlayType")))
+                                .taskMode(task.optString("taskMode"))
+                                .taskSceneCode(sceneCode)
+                                .scene("ANTFOREST", "H5")
+                                .version(TaskAlternative.DEFAULT_VERSION));
                         continue;
                     }
                     // 底线：交易/支付/充值类一律不申报、一次即永久拉黑，绝不伪造。

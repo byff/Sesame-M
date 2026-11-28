@@ -6,6 +6,7 @@ import org.json.JSONObject;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 
 import io.github.aw1y2z.sesame.data.modelFieldExt.SelectAndCountModelField;
 import io.github.aw1y2z.sesame.data.modelFieldExt.SelectModelField;
@@ -55,6 +56,30 @@ public class BaseModel extends Model {
     private static final SelectAndCountModelField rpcRequestList = new SelectAndCountModelField("rpcRequestList", "RPC请求列表及每日执行数(慎用)", new LinkedHashMap<>(), AlipayrpcRequest::getList, "请填写每日执行次数", 1, 100);
     @Getter
     private static final SelectModelField rpcRequestTaskList= new SelectModelField("rpcRequestTaskList", "RPC可选任务列表(长按列表中的项仅移除用，内容需打开rpcResquest.json文件配置)", new LinkedHashSet<>(), AlipayrpcRequest::getList,"长按删除RPC列表项用");
+    /** 链接任务单个每日最大执行次数（0 = 只收集不执行） */
+    @Getter
+    private static final IntegerModelField maxGameTaskSubmitPerDay = new IntegerModelField("maxGameTaskSubmitPerDay", "链接任务单个每日最大执行次数(0仅收集不执行)", 1, 0, 10);
+    /**
+     * 每个账号独立配置：勾选的「游戏任务 + 任务列表」不执行，默认空 = 全部执行。
+     */
+    @Getter
+    private static final SelectModelField miniGameTaskDisallowList = new SelectModelField("miniGameTaskDisallowList", "跳转任务 | 不允许执行列表(游戏、第三方)", new LinkedHashSet<>(), MiniGameTaskListMap::getOptions);
+
+    public static boolean isMiniGameTaskDisallowed(String taskTitle, String listTitle) {
+        return isMiniGameTaskDisallowed(taskTitle, "", listTitle);
+    }
+
+    /**
+     * 带描述的判定：新键为「任务名[描述] + 任务列表类」，同时兼容历史只存任务名的旧键。
+     */
+    public static boolean isMiniGameTaskDisallowed(String taskTitle, String desc, String listTitle) {
+        Set<String> value = miniGameTaskDisallowList.getValue();
+        if (value == null) {
+            return false;
+        }
+        return value.contains(MiniGameTaskListMap.key(MiniGameTaskListMap.name(taskTitle, desc), listTitle))
+                || value.contains(MiniGameTaskListMap.key(taskTitle, listTitle));
+    }
     @Override
     public String getName() {
         return "基础";
@@ -94,6 +119,8 @@ public class BaseModel extends Model {
         modelFields.addField(backupConfigDays);
         modelFields.addField(rpcRequestList);
         modelFields.addField(rpcRequestTaskList);
+        modelFields.addField(maxGameTaskSubmitPerDay);
+        modelFields.addField(miniGameTaskDisallowList);
         // 多账号切换相关（自动切号、验证处理、账号限制）都是全局配置，
         // 已移到「多账号切换」统一设置页（AccountSwitchFields），不在基础分组里重复渲染
         return modelFields;

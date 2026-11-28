@@ -177,6 +177,83 @@ public class MessageUtil {
         return true;
     }
 
+    /**
+     * 任务列表（listTitle）的中文名称，用于日志与设置界面显示；未登记的返回原值。
+     *
+     * <p>与 {@link #checkResultCodeAndMarkTaskBlackList} 里各 case 的备注保持一致。
+     */
+    public static String getTaskListName(String listTitle) {
+        if (listTitle == null || listTitle.isEmpty()) {
+            return "";
+        }
+        switch (listTitle) {
+            case "AntForestVitalityTaskList":
+                return "活力值";
+            case "AntForestHuntTaskList":
+                return "森林抽抽乐";
+            case "MonopolyTaskList":
+                return "保护地";
+            case "AntFarmDoFarmTaskList":
+                return "饲料";
+            case "AntFarmDrawMachineTaskList":
+                return "装扮抽抽乐";
+            case "AntKitchenTaskList":
+            case "AntFarmChickenChefTaskList":
+                return "小鸡大厨";
+            case "AntDodoTaskList":
+                return "神奇物种";
+            case "AntOceanAntiepTaskList":
+                return "海洋普通任务";
+            case "AntOceanFishBlackList":
+                return "海洋去摸鱼";
+            case "AntOrchardTaskList":
+                return "肥料";
+            case "OrchardChouChouLeTaskList":
+            case "AntOrchardDrawTaskList":
+                return "农场抽抽乐";
+            case "GoldenBeansTaskList":
+                return "金豆";
+            case "AntStallTaskList":
+                return "新村";
+            case "AntSportsTaskList":
+                return "运动";
+            case "AntMemberTaskList":
+                return "会员";
+            case "MemberCreditSesameTaskList":
+                return "芝麻信用芝麻粒";
+            default:
+                return listTitle;
+        }
+    }
+
+    /**
+     * 按任务列表来源输出日志：森林类写森林日志，庄园/农场类写庄园日志，其余写其他日志。
+     */
+    public static void logByTaskList(String listTitle, String message) {
+        switch (listTitle == null ? "" : listTitle) {
+            case "AntForestVitalityTaskList":
+            case "AntForestHuntTaskList":
+            case "MonopolyTaskList":
+            case "AntDodoTaskList":
+            case "AntOceanAntiepTaskList":
+            case "AntOceanFishBlackList":
+                Log.forest(message);
+                break;
+            case "AntFarmDoFarmTaskList":
+            case "AntFarmDrawMachineTaskList":
+            case "AntKitchenTaskList":
+            case "AntFarmChickenChefTaskList":
+            case "AntOrchardTaskList":
+            case "OrchardChouChouLeTaskList":
+            case "AntOrchardDrawTaskList":
+            case "GoldenBeansTaskList":
+                Log.farm(message);
+                break;
+            default:
+                Log.other(message);
+        }
+    }
+
     public static Boolean checkMemo(JSONObject jo) {
         return checkMemo(UNKNOWN_TAG, jo);
     }

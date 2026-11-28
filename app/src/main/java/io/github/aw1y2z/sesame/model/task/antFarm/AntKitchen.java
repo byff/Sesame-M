@@ -15,6 +15,8 @@ import java.util.Set;
 import io.github.aw1y2z.sesame.data.task.TaskAttemptPolicy;
 import io.github.aw1y2z.sesame.data.task.TaskAward;
 import io.github.aw1y2z.sesame.hook.ApplicationHook;
+import io.github.aw1y2z.sesame.model.base.TaskAlternative;
+import io.github.aw1y2z.sesame.model.task.antGame.TaskAlternative.GameTask;
 import io.github.aw1y2z.sesame.util.Log;
 import io.github.aw1y2z.sesame.util.MessageUtil;
 import io.github.aw1y2z.sesame.util.StringUtil;
@@ -131,9 +133,51 @@ public class AntKitchen {
                 }
                 String taskId = task.optString("taskId", "");
                 String title = task.optString("title", taskId);
-                if (StringUtil.isEmpty(taskId) || (blackList != null && blackList.contains(title))) {
+                if (StringUtil.isEmpty(taskId)) {
                     continue;
                 }
+                if (blackList != null && blackList.contains(title)) {
+                    // 黑名单里的游戏/跳转第三方任务 → 先跑厨房伪申报，再走 handleGameTask 做平台侧链接模拟+领奖+补量（跳过厂商上报）
+                    final JSONObject finalTask = task;
+                    final String finalTitle = title;
+                    final String finalTaskId = taskId;
+                    String desc = finalTask.optString("desc", "");
+                    final String bizKey = finalTask.optString("bizKey", finalTaskId);
+                    final int rightsTimes = finalTask.optInt("rightsTimes");
+                    final int rightsTimesLimit = finalTask.optInt("rightsTimesLimit");
+                    String targetUrl = TaskAlternative.firstNonEmpty(finalTask.optString("targetUrl"),
+                            finalTask.optString("taskJumpUrl"), finalTask.optString("link"));
+                    TaskAlternative.handleGameTask(new GameTask("AntKitchenTaskList", finalTitle, desc, targetUrl,
+                            finalTask.optString("taskStatus", "TODO"))
+                            .bizKey(bizKey)
+                            .rights(rightsTimes, rightsTimesLimit)
+                            .taskSceneCode(TASK_SCENE)
+                            .scene(TASK_SCENE, "ANTFARM")
+                            .beforeGameLink(() -> {
+                                // 伪申报循环：与 handleGameTask 入口处的 hasExecuteQuota 共用同一份配额（原 listTitle），
+                                // 由 maxGameTaskSubmitPerDay 统一限制，不再单独计数
+                                for (int j = 0, n = TaskAlternative.rightsTimesToDo(rightsTimes, rightsTimesLimit); j < n; j++) {
+                                    JSONObject pseudoJo;
+                                    try {
+                                        pseudoJo = new JSONObject(AntFarmRpcCall.doFarmTask(bizKey, TASK_SCENE));
+                                    } catch (Exception e) {
+                                        break;
+                                    }
+                                    MessageUtil.checkResultCodeAndMarkTaskBlackList("AntKitchenTaskList", finalTitle, pseudoJo);
+                                    if (!MessageUtil.checkSuccess(TAG, pseudoJo)) {
+                                        break;
+                                    }
+                                    Log.farm("小鸡大厨🧾申报[" + finalTitle + "]"
+                                            + TaskAlternative.rightsProgressText(rightsTimes, rightsTimesLimit, j));
+                                    TimeUtil.sleep(1000);
+                                    receiveTaskAward(finalTaskId, finalTask.optInt("canReceiveAwardCount", 0),
+                                            finalTitle, autoBlackList);
+                                }
+                            })
+                            .skipVendorReport(true));
+                    continue;
+                }
+
                 // 自动黑名单归属交给统一策略：关掉开关时 listField 传 null，策略只记账不落盘
                 TaskAttemptPolicy.Site site = new TaskAttemptPolicy.Site(
                         autoBlackList ? BLACKLIST_FIELD : null, "小鸡大厨任务", taskId, TASK_SCENE,

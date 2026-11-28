@@ -80,7 +80,45 @@ public class Status {
      * <p>随 status.json 的每日重置自动清空（updateDay -> unload -> new Status()）。
      */
     private final Map<String, Integer> intFlagLogList = new HashMap<>();
-    
+
+    /**
+     * 金豆兑换当日累计：key=场景（FARM/…），value=当日已消耗的肥料/芝麻粒折算量。
+     * <p>用于「每日兑换上限」判定：肥料换豆有服务端上限之外的自设限额时，
+     * 靠这里记住当天已换多少，避免反复兑换超限。
+     */
+    private final Map<String, Integer> goldenBeanExchangeLogList = new HashMap<>();
+
+    /**
+     * 游戏任务提交当日累计：key=任务键（任务名+场景），value=当日已提交次数。
+     * <p>用于「链接任务单个每日最大执行次数」限制，防止同一任务反复提交。
+     */
+    private final Map<String, Integer> gameTaskSubmitLogList = new HashMap<>();
+
+    /** 当日游戏任务已提交次数（未提交过返回 0） */
+    public static synchronized int getGameTaskSubmitCountToday(String key) {
+        Integer count = INSTANCE.gameTaskSubmitLogList.get(key);
+        return count == null ? 0 : count;
+    }
+
+    /** 游戏任务提交次数 +1 并落盘 */
+    public static synchronized void incrGameTaskSubmitToday(String key) {
+        INSTANCE.gameTaskSubmitLogList.put(key, getGameTaskSubmitCountToday(key) + 1);
+        save();
+    }
+
+    /** 当日金豆兑换已累计量（未兑换过返回 0） */
+    public static synchronized int getGoldenBeanExchangeCountToday(String key) {
+        Integer count = INSTANCE.goldenBeanExchangeLogList.get(key);
+        return count == null ? 0 : count;
+    }
+
+    /** 金豆兑换累计 +beanCount 并落盘 */
+    public static synchronized void goldenBeanExchangeToday(String key, int beanCount) {
+        int total = getGoldenBeanExchangeCountToday(key) + beanCount;
+        INSTANCE.goldenBeanExchangeLogList.put(key, total);
+        save();
+    }
+
     // 保存时间
     private Long saveTime = 0L;
     

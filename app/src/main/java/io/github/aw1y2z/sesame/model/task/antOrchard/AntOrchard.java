@@ -19,6 +19,8 @@ import io.github.aw1y2z.sesame.data.modelFieldExt.ChoiceModelField;
 import io.github.aw1y2z.sesame.data.modelFieldExt.IntegerModelField;
 import io.github.aw1y2z.sesame.data.modelFieldExt.SelectModelField;
 import io.github.aw1y2z.sesame.model.task.antGame.GameTask;
+import io.github.aw1y2z.sesame.model.task.antGame.MiniGameTaskTable;
+import io.github.aw1y2z.sesame.model.task.antGame.MiniGameVendorReporter;
 import io.github.aw1y2z.sesame.util.Log;
 import io.github.aw1y2z.sesame.util.MessageUtil;
 import io.github.aw1y2z.sesame.util.Status;
@@ -281,16 +283,45 @@ public class AntOrchard extends ModelTask {
                     }
                     JSONObject bizInfo = new JSONObject(taskBaseInfo.optString("bizInfo", "{}"));
                     String taskName = bizInfo.optString("title");
-                    // 黑名单任务跳过（含预置小游戏种子与自动拉黑项）
-                    if (OrchardChouChouLeTaskList.getValue().contains(taskName)) {
-                        continue;
-                    }
                     String taskStatus = taskBaseInfo.optString("taskStatus");
                     String taskType = taskBaseInfo.optString("taskType");
                     String taskSceneCode = taskBaseInfo.optString("sceneCode");
                     JSONObject taskRights = taskInfo.optJSONObject("taskRights");
                     int rightsTimes = taskRights != null ? taskRights.optInt("rightsTimes") : 0;
                     int rightsTimesLimit = taskRights != null ? taskRights.optInt("rightsTimesLimit") : 0;
+                    // 黑名单任务跳过（含预置小游戏种子与自动拉黑项）
+                    if (OrchardChouChouLeTaskList.getValue().contains(taskName)) {
+                        //第2步：黑名单任务跳过（游戏/跳转第三方任务由 TaskAlternative 执行一次后跳过）
+                        TaskAlternative.handleGameTask(new io.github.aw1y2z.sesame.model.task.antGame.TaskAlternative.GameTask(
+                                "OrchardChouChouLeTaskList", taskName,
+                                TaskAlternative.firstNonEmpty(bizInfo.optString("desc"), bizInfo.optString("taskDesc")),
+                                TaskAlternative.firstNonEmpty(bizInfo.optString("targetUrl"), bizInfo.optString("taskJumpUrl"),
+                                        bizInfo.optString("link")),
+                                taskStatus)
+                                .bizKey(taskType)
+                                .rights(rightsTimes, rightsTimesLimit)
+                                .taskRemain(Math.max(0, taskBaseInfo.optInt("taskRequire", 0) - taskBaseInfo.optInt("taskProgress", 0)))
+                                .taskPlayType(TaskAlternative.firstNonEmpty(taskBaseInfo.optString("taskPlayType"),
+                                        taskBaseInfo.optString("taskProdPlayType")))
+                                .taskMode(taskBaseInfo.optString("taskMode"))
+                                .taskSceneCode(taskSceneCode)
+                                .scene("ORCHARD", "ANTFARM_ORCHARD")
+                                .version(TaskAlternative.DEFAULT_VERSION));
+                        continue;
+                    }
+
+                    // 抽抽乐「攒 N 金豆」三档（CHOUCHOULE_GAME_ZJD*）：进度型任务，
+                    // 进度达标后由服务端置为 FINISHED，再调 receiveTaskAwardantorchard 领抽奖机会
+                    if (taskType.startsWith("CHOUCHOULE_GAME_ZJD")) {
+                        handleChouChouLeTier(taskInfo, taskBaseInfo, taskType, taskSceneCode, taskName);
+                        continue;
+                    }
+
+                    // 抽抽乐限时小游戏（2611CCL_GAME_ZH_*）：走厂商真实上报，回查落账后领奖
+                    if (taskType.startsWith("2611CCL_GAME_ZH_")) {
+                        handleChouChouLeGameTask(bizInfo, taskBaseInfo, taskType, taskSceneCode);
+                        continue;
+                    }
 
                     // 已完成任务领取奖励（如每日签到）
                     if ("FINISHED".equals(taskStatus)) {
@@ -384,6 +415,158 @@ public class AntOrchard extends ModelTask {
             }
         } catch (Throwable t) {
             Log.err(TAG, "orchardChouChouLeScene err:", t);
+        }
+    }
+
+    /**
+     * 抽抽乐「攒 N 金豆」三档（CHOUCHOULE_GAME_ZJD*）：进度型任务。
+     * <p>
+     * {@code taskProgress} 是已领取的金豆数、{@code taskRequire} 是阈值；
+     * 进度够了服务端才把状态置为 FINISHED，置为 FINISHED 后还要再调
+     * {@code receiveTaskAwardantorchard} 才拿到抽奖机会。
+     * 进度已达标但状态尚未结算时，最多等 6 轮 × 1.5 秒再领。
+     */
+    private void handleChouChouLeTier(JSONObject taskInfo, JSONObject taskBaseInfo, String taskType,
+                                      String taskSceneCode, String taskName) {
+        try {
+            int progress = taskBaseInfo.optInt("taskProgress", 0);
+            int require = taskBaseInfo.optInt("taskRequire", 0);
+            String taskStatus = taskBaseInfo.optString("taskStatus");
+            JSONObject rights = taskInfo.optJSONObject("taskRights");
+            int awardCount = rights == null ? 0 : rights.optInt("awardCount", 0);
+            if ("RECEIVED".equals(taskStatus) || "COMPLETED".equals(taskStatus)) {
+                return;
+            }
+            Log.farm("农场抽抽乐🎯[" + taskName + "]进度=" + progress + "/" + require
+                    + " 状态=" + taskStatus + " 机会=" + awardCount);
+            boolean claimable = "FINISHED".equals(taskStatus) || "TO_RECEIVE".equals(taskStatus);
+            if (!claimable && progress < require) {
+                // 进度不够，等下一轮再来看
+                return;
+            }
+            for (int attempt = 0; attempt < 6; attempt++) {
+                JSONObject award = new JSONObject(
+                        AntOrchardRpcCall.receiveTaskAwardantorchard(taskType, taskSceneCode));
+                if (MessageUtil.checkResultCode(TAG, award) && MessageUtil.checkSuccess(TAG, award)) {
+                    Log.farm("农场抽抽乐🎁领取[" + taskName + "]成功，抽奖机会+" + awardCount);
+                    return;
+                }
+                if (attempt < 5) {
+                    TimeUtil.sleep(1500);
+                }
+            }
+            Log.farm("农场抽抽乐🎁领取[" + taskName + "]重试 6 次仍未成功，放弃这一档");
+        } catch (Throwable t) {
+            Log.err(TAG, "handleChouChouLeTier err:", t);
+        }
+    }
+
+    /**
+     * 抽抽乐限时小游戏（2611CCL_GAME_ZH_*）：厂商上报 → 轮询落账 → 领奖。
+     * <p>
+     * 这类任务的进度由厂商服务器记账，客户端发 finishTask 无效；
+     * 已在静态适配表里的游戏直接按动作码上报，未适配的只能真人玩一次后由模块领奖。
+     */
+    private void handleChouChouLeGameTask(JSONObject bizInfo, JSONObject taskBaseInfo, String taskType,
+                                          String taskSceneCode) {
+        String title = bizInfo.optString("title", taskType);
+        String targetUrl = bizInfo.optString("targetUrl", "");
+        String desc = bizInfo.optString("desc", "");
+        String taskStatus = taskBaseInfo.optString("taskStatus");
+        try {
+            if ("RECEIVED".equals(taskStatus) || "COMPLETED".equals(taskStatus)) {
+                return;
+            }
+            if ("FINISHED".equals(taskStatus) || "TO_RECEIVE".equals(taskStatus)) {
+                claimChouChouLeAward(taskType, taskSceneCode, title);
+                return;
+            }
+            if (Status.hasFlagToday("GoldenBean::chouchoule_game_" + taskType)) {
+                return;
+            }
+            String appId = "";
+            String channel = "";
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("[?&]appId=(\\d+)").matcher(targetUrl);
+            if (m.find()) {
+                appId = m.group(1);
+            }
+            m = java.util.regex.Pattern.compile("channel%3[Dd](\\w+)").matcher(targetUrl);
+            if (m.find()) {
+                channel = m.group(1);
+            }
+            if (appId.isEmpty() || !MiniGameVendorReporter.supports(appId)) {
+                Log.farm("农场抽抽乐🎮[" + title + "]#厂商未适配，需真人玩一次");
+                Status.flagToday("GoldenBean::chouchoule_game_" + taskType);
+                return;
+            }
+            String action = MiniGameVendorReporter.resolveAction(appId, desc);
+            if (action == null || action.isEmpty()) {
+                action = MiniGameVendorReporter.resolveAction(appId, title);
+            }
+            if (action == null || action.isEmpty()) {
+                Log.farm("农场抽抽乐🎮[" + title + "]#任务描述匹配不到 actionCode");
+                Status.flagToday("GoldenBean::chouchoule_game_" + taskType);
+                return;
+            }
+            int every = Math.max(1, MiniGameTaskTable.everyOf(appId, action));
+            int times = 1;
+            java.util.regex.Matcher dm = java.util.regex.Pattern.compile("(\\d+)次").matcher(desc);
+            if (dm.find()) {
+                times = Math.max(1, Integer.parseInt(dm.group(1)) / every);
+            }
+            Log.farm("农场抽抽乐🎮[" + title + "]厂商上报 action=" + action + " 次数=" + times
+                    + " 渠道=" + channel + " appId=" + appId);
+            boolean ok = MiniGameVendorReporter.report(appId, title, channel, action, times, "GoldenBeansTaskList");
+            if (!ok) {
+                Log.farm("农场抽抽乐🎮[" + title + "]#厂商上报失败（详情见 debug 日志）");
+                return;
+            }
+            Status.flagToday("GoldenBean::chouchoule_game_" + taskType);
+            // 上报即时落账的厂商族：轮询 4 轮，状态变为已完成即领奖
+            for (int round = 1; round <= 4; round++) {
+                TimeUtil.sleep(3000);
+                String status = queryChouChouLeStatus(taskType);
+                Log.farm("农场抽抽乐🔄[" + title + "]回查第" + round + "轮 状态=" + status);
+                if ("FINISHED".equals(status) || "TO_RECEIVE".equals(status) || "COMPLETED".equals(status)) {
+                    claimChouChouLeAward(taskType, taskSceneCode, title);
+                    return;
+                }
+            }
+        } catch (Throwable t) {
+            Log.err(TAG, "handleChouChouLeGameTask err:", t);
+        }
+    }
+
+    /** 重查抽抽乐单个任务状态（TODO/FINISHED/RECEIVED/…） */
+    private static String queryChouChouLeStatus(String taskType) {
+        try {
+            JSONObject jo = new JSONObject(AntOrchardRpcCall.orchardDrawListTask());
+            JSONArray list = jo.optJSONArray("taskInfoList");
+            if (list != null) {
+                for (int i = 0; i < list.length(); i++) {
+                    JSONObject item = list.optJSONObject(i);
+                    JSONObject base = item == null ? null : item.optJSONObject("taskBaseInfo");
+                    if (base != null && taskType.equals(base.optString("taskType"))) {
+                        return base.optString("taskStatus");
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            Log.err(TAG, "queryChouChouLeStatus err:", t);
+        }
+        return "";
+    }
+
+    /** 领取抽抽乐任务奖励 */
+    private static void claimChouChouLeAward(String taskType, String sceneCode, String title) {
+        try {
+            JSONObject award = new JSONObject(
+                    AntOrchardRpcCall.receiveTaskAwardantorchard(taskType, sceneCode));
+            if (MessageUtil.checkResultCode(TAG, award)) {
+                Log.farm("农场抽抽乐🎁[" + title + "]#领取成功");
+            }
+        } catch (Throwable t) {
+            Log.err(TAG, "claimChouChouLeAward err:", t);
         }
     }
 
@@ -1389,7 +1572,23 @@ public class AntOrchard extends ModelTask {
                 String groupId = jo.optString("groupId", "");
                 JSONObject displayConfig = jo.optJSONObject("taskDisplayConfig");
                 String title = displayConfig != null ? displayConfig.optString("title", "未知任务") : "未知任务";
+                String desc = displayConfig == null ? "" : displayConfig.optString("desc");
+                String targetUrl = displayConfig == null ? ""
+                        : TaskAlternative.firstNonEmpty(displayConfig.optString("targetUrl"),
+                        displayConfig.optString("taskJumpUrl"), displayConfig.optString("link"));
                 if (AntOrchardTaskList.getValue().contains(title)) {
+                    //第2步：黑名单任务跳过（游戏/跳转第三方任务由 TaskAlternative 执行一次后跳过）
+                    TaskAlternative.handleGameTask(new io.github.aw1y2z.sesame.model.task.antGame.TaskAlternative.GameTask(
+                            "AntOrchardTaskList", title, desc, targetUrl, taskStatus)
+                            .bizKey(jo.optString("taskId"))
+                            .rights(jo.optInt("rightsTimes", 0), jo.optInt("rightsTimesLimit", 0))
+                            .taskRemain(jo.optInt("taskRemain", 0))
+                            .taskPlayType(TaskAlternative.firstNonEmpty(jo.optString("taskPlayType"),
+                                    jo.optString("taskProdPlayType")))
+                            .taskMode(jo.optString("taskMode"))
+                            .taskSceneCode(jo.optString("sceneCode"))
+                            .scene("ORCHARD", "H5")
+                            .version(TaskAlternative.DEFAULT_VERSION));
                     continue;
                 }
 

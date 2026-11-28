@@ -23,6 +23,7 @@ import io.github.aw1y2z.sesame.model.base.TaskAlternative;
 import io.github.aw1y2z.sesame.model.normal.answerAI.AnswerAI;
 import io.github.aw1y2z.sesame.model.task.antFarm.AntFarm.TaskStatus;
 import io.github.aw1y2z.sesame.model.task.antForest.AntForestRpcCall;
+import io.github.aw1y2z.sesame.model.task.antGame.TaskAlternative.GameTask;
 import io.github.aw1y2z.sesame.util.JsonUtil;
 import io.github.aw1y2z.sesame.util.Log;
 import io.github.aw1y2z.sesame.util.MessageUtil;
@@ -979,8 +980,23 @@ public class AntOcean extends ModelTask {
             }
             JSONObject bizInfo = new JSONObject(task.getString("bizInfo"));
             String taskTitle = bizInfo.optString("taskTitle");
-            //黑名单任务跳过
+            //黑名单任务跳过（游戏/跳转第三方任务由 TaskAlternative 执行一次后跳过）
             if (AntOceanAntiepTaskList.getValue().contains(taskTitle)) {
+                TaskAlternative.handleGameTask(new GameTask("AntOceanAntiepTaskList",
+                        taskTitle, TaskAlternative.firstNonEmpty(bizInfo.optString("desc"),
+                        bizInfo.optString("taskDesc"), bizInfo.optString("taskContent")),
+                        //海洋任务链接字段是 taskJumpUrl，兼容旧结构回落 targetUrl
+                        TaskAlternative.firstNonEmpty(bizInfo.optString("targetUrl"),
+                        bizInfo.optString("taskJumpUrl"), bizInfo.optString("link")),
+                        task.optString("taskStatus", "TODO"))
+                        .bizKey(task.optString("taskType"))
+                        .rights(task.optInt("rightsTimes", 0), task.optInt("rightsTimesLimit", 0))
+                        .taskPlayType(TaskAlternative.firstNonEmpty(task.optString("taskPlayType"),
+                        task.optString("taskProdPlayType")))
+                        .taskMode(task.optString("taskMode"))
+                        .taskSceneCode(task.optString("sceneCode"))
+                        .scene(task.optString("sceneCode"), "ANTFOCEAN")
+                        .version(AntOceanRpcCall.VERSION));
                 return false;
             }
             String sceneCode = task.getString("sceneCode");
@@ -1626,8 +1642,21 @@ public class AntOcean extends ModelTask {
                     }
                     continue;
                 }
-                //黑名单任务跳过
+                //黑名单任务跳过（游戏/跳转第三方任务由 TaskAlternative 执行一次后跳过）
                 if (AntOceanFishBlackList.getValue().contains(taskTitle)) {
+                    TaskAlternative.handleGameTask(new GameTask("AntOceanFishBlackList",
+                            taskTitle, TaskAlternative.firstNonEmpty(bizInfo.optString("desc"),
+                            bizInfo.optString("taskDesc"), bizInfo.optString("taskContent")),
+                            //海洋任务链接字段是 taskJumpUrl，兼容旧结构回落 targetUrl
+                            TaskAlternative.firstNonEmpty(bizInfo.optString("targetUrl"),
+                            bizInfo.optString("taskJumpUrl"), bizInfo.optString("link")), taskStatus)
+                            .bizKey(taskType)
+                            .taskPlayType(TaskAlternative.firstNonEmpty(taskBaseInfo.optString("taskPlayType"),
+                            taskBaseInfo.optString("taskProdPlayType")))
+                            .taskMode(taskBaseInfo.optString("taskMode"))
+                            .taskSceneCode("ANTAIFISH")
+                            .scene("ANTAIFISH", "ANTAIFISH")
+                            .version(AntOceanRpcCall.VERSION));
                     continue;
                 }
                 // 处理其他 TODO 状态任务
