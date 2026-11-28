@@ -19,13 +19,7 @@ import lombok.Getter;
 import io.github.aw1y2z.sesame.data.Model;
 import io.github.aw1y2z.sesame.data.ModelFields;
 import io.github.aw1y2z.sesame.data.ModelGroup;
-import io.github.aw1y2z.sesame.data.modelFieldExt.AccountSwitchBooleanModelField;
-import io.github.aw1y2z.sesame.data.modelFieldExt.AccountSwitchFinalAccountModelField;
-import io.github.aw1y2z.sesame.data.modelFieldExt.AccountSwitchIntervalModelField;
-import io.github.aw1y2z.sesame.data.modelFieldExt.AccountSwitchListModelField;
-import io.github.aw1y2z.sesame.data.modelFieldExt.AccountSwitchTimesModelField;
 import io.github.aw1y2z.sesame.data.modelFieldExt.BooleanModelField;
-import io.github.aw1y2z.sesame.data.modelFieldExt.FeatureFlagBooleanModelField;
 import io.github.aw1y2z.sesame.data.modelFieldExt.ChoiceModelField;
 import io.github.aw1y2z.sesame.data.modelFieldExt.IntegerModelField;
 import io.github.aw1y2z.sesame.data.modelFieldExt.ListModelField;
@@ -61,47 +55,6 @@ public class BaseModel extends Model {
     private static final SelectAndCountModelField rpcRequestList = new SelectAndCountModelField("rpcRequestList", "RPC请求列表及每日执行数(慎用)", new LinkedHashMap<>(), AlipayrpcRequest::getList, "请填写每日执行次数", 1, 100);
     @Getter
     private static final SelectModelField rpcRequestTaskList= new SelectModelField("rpcRequestTaskList", "RPC可选任务列表(长按列表中的项仅移除用，内容需打开rpcResquest.json文件配置)", new LinkedHashSet<>(), AlipayrpcRequest::getList,"长按删除RPC列表项用");
-    // ===== 自动切换登录账号（全局配置，值存在 config/config_common.json，不随账号走）=====
-    @Getter
-    private static final AccountSwitchBooleanModelField accountSwitchEnabled =
-            new AccountSwitchBooleanModelField("accountSwitchEnabled", "自动切换登录账号", false)
-                    .setDescription("开启后按下面的顺序循环切换支付宝登录账号；账号列表在模块启动时自动读取");
-    @Getter
-    private static final AccountSwitchIntervalModelField accountSwitchIntervalMinutes =
-            new AccountSwitchIntervalModelField("accountSwitchIntervalMinutes",
-                    "切号等待间隔(分钟,0跑完就切)", 0, 0, 24 * 60,
-                    AccountSwitchIntervalModelField.KIND_SWITCH)
-                    .setDescription("当前账号这一轮所有模块操作完成后，再等这么久才切到下一个账号；0 表示跑完立即切换（轮次节奏由「切号轮次间隔」控制）");
-    @Getter
-    private static final AccountSwitchIntervalModelField accountSwitchRoundIntervalMinutes =
-            new AccountSwitchIntervalModelField("accountSwitchRoundIntervalMinutes",
-                    "切号轮次间隔(分钟,0按执行间隔)", 0, 0, 24 * 60,
-                    AccountSwitchIntervalModelField.KIND_ROUND)
-                    .setDescription("所有账号轮流执行完一整轮后，等待这么久才开始下一轮；0 表示按「执行间隔」计算（默认 50 分钟）");
-    @Getter
-    private static final AccountSwitchListModelField accountSwitchAccounts =
-            new AccountSwitchListModelField("accountSwitchAccounts", "账号切换顺序列表", new ArrayList<>())
-                    .setDescription("点击进入可上下移动调整切号顺序");
-    @Getter
-    private static final AccountSwitchFinalAccountModelField accountSwitchFinalAccountUid =
-            new AccountSwitchFinalAccountModelField("accountSwitchFinalAccountUid", "常态保持账号(轮完切入)")
-                    .setDescription("每一轮所有账号轮流执行完后切到该账号作为收尾，等待「切号轮次间隔」再开始下一轮；不选则按列表顺序循环");
-    @Getter
-    private static final AccountSwitchTimesModelField accountSwitchScheduleTimes =
-            new AccountSwitchTimesModelField("accountSwitchScheduleTimes", "切换账号定时执行(如0800,2000)", new ArrayList<>())
-                    .setDescription("到点后立即终止当前账号任务，20 秒后切到常态保持账号，并把这一轮的所有账号依次执行完；支持 HH、HHmm、HHmmss，逗号分隔");
-    // ===== 验证与账号限制（全局配置，值存在 config/config_common.json，不随账号走）=====
-    @Getter
-    private static final FeatureFlagBooleanModelField autoSlideCaptchaEnabled =
-            new FeatureFlagBooleanModelField("autoSlideCaptchaEnabled", "自动处理滑动/拼图验证", true,
-                    FeatureFlagBooleanModelField.Flag.AUTO_SLIDE_CAPTCHA)
-                    .setDescription("开启后自动识别并完成滑动与拼图验证，低版本走滑动手势，新版本走拼图截图识别");
-    @Getter
-    private static final FeatureFlagBooleanModelField unlockAccountLimitEnabled =
-            new FeatureFlagBooleanModelField("unlockAccountLimitEnabled", "解除登录账号数量限制", true,
-                    FeatureFlagBooleanModelField.Flag.UNLOCK_ACCOUNT_LIMIT)
-                    .setDescription("开启后保留本机全部登录账号记录，不再被账号管理页清理到 5 个；不解除服务端风控限制");
-    
     @Override
     public String getName() {
         return "基础";
@@ -141,16 +94,8 @@ public class BaseModel extends Model {
         modelFields.addField(backupConfigDays);
         modelFields.addField(rpcRequestList);
         modelFields.addField(rpcRequestTaskList);
-        // 自动切换登录账号：全部是全局配置，值存在公共配置文件里
-        modelFields.addField(accountSwitchEnabled);
-        modelFields.addField(accountSwitchIntervalMinutes);
-        modelFields.addField(accountSwitchRoundIntervalMinutes);
-        modelFields.addField(accountSwitchAccounts);
-        modelFields.addField(accountSwitchFinalAccountUid);
-        modelFields.addField(accountSwitchScheduleTimes);
-        // 自动滑块/拼图验证、解除账号数量限制：同样是全局配置
-        modelFields.addField(autoSlideCaptchaEnabled);
-        modelFields.addField(unlockAccountLimitEnabled);
+        // 多账号切换相关（自动切号、验证处理、账号限制）都是全局配置，
+        // 已移到「多账号切换」统一设置页（AccountSwitchFields），不在基础分组里重复渲染
         return modelFields;
     }
     

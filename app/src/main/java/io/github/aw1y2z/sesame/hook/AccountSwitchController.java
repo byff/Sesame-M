@@ -279,6 +279,25 @@ public final class AccountSwitchController {
         }
     }
 
+    /**
+     * 立即同步支付宝登录账号（界面点「刷新」时用）。
+     * <p>与 {@link #requestAccountSync()} 的区别是不等启动延迟：用户刚在支付宝里登录了新账号，
+     * 希望马上在列表里看到。
+     */
+    public static void requestAccountSyncNow() {
+        ExecutorService executor = syncExecutor;
+        if (executor == null) {
+            // 调度器还没起来（宿主刚启动）：退化为直接跑一次，仍在后台线程
+            syncAccountsFromHost();
+            return;
+        }
+        try {
+            executor.execute(AccountSwitchController::syncAccountsFromHost);
+        } catch (Throwable t) {
+            Log.printStackTrace(TAG + "#提交账号同步失败", t);
+        }
+    }
+
     /** 模块启动时把支付宝登录账号合并到公共配置，已有顺序不变，新账号追加 */
     public static void syncAccountsFromHost() {
         lastAccountSync = System.currentTimeMillis();

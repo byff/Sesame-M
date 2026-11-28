@@ -349,7 +349,7 @@ internal fun fieldMatchesSearch(query: String, field: ModelField<*>): Boolean {
 }
 
 /** 账号顺序行的摘要：显示账号个数与前两个账号名 */
-private fun accountOrderSummary(): String {
+internal fun accountOrderSummary(): String {
     val accounts = AccountSwitchConfig.getAccountSwitchAccounts()
     if (accounts.isEmpty()) {
         return "暂无账号"

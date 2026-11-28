@@ -352,15 +352,18 @@ private fun buildFieldHits(query: String): List<FieldHit> {
  *
  * @param onGlobalChanged 全局字段（切号等）改动时的回调：这类字段的值已经即时写进公共配置文件，
  *   不走账号配置的落盘流程，页面需要单独提示"已保存"。
+ * @param refreshKey 变化时强制重算摘要。字段值存在文件里而不是 Compose 状态里，
+ *   改完之后摘要不会自己刷新，调用方把版本号传进来即可触发重算。
  */
 @Composable
 fun FieldItem(
     field: ModelField<*>,
     onFieldChanged: (() -> Unit)? = null,
-    onGlobalChanged: (() -> Unit)? = null
+    onGlobalChanged: (() -> Unit)? = null,
+    refreshKey: Int = 0
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
-        FieldItemBody(field, onFieldChanged, onGlobalChanged)
+        FieldItemBody(field, onFieldChanged, onGlobalChanged, refreshKey)
         // 字段说明统一在这里渲染；BOOLEAN 的说明由 SwitchPreference(summary) 承载，不重复
         val description = field.description
         if (field.type != "BOOLEAN" && !description.isNullOrBlank()) {
@@ -378,7 +381,8 @@ fun FieldItem(
 private fun FieldItemBody(
     field: ModelField<*>,
     onFieldChanged: (() -> Unit)? = null,
-    onGlobalChanged: (() -> Unit)? = null
+    onGlobalChanged: (() -> Unit)? = null,
+    refreshKey: Int = 0
 ) {
     // 用字段名唯一标识展开状态，避免 LazyColumn 复用导致错位
     val fieldKey = "${field.type}:${field.name}"

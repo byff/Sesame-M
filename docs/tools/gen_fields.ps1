@@ -206,18 +206,26 @@ foreach ($cls in $order) {
     Write-Host ("{0,-18} {1,4}  {2}" -f $cls, $count, $modelName)
 }
 
-# 手工维护的小节（脚本扫不到 AppConfig 的普通字段）：从原文件原样搬回，插入位置沿用「它后面那个标题」
+# 手工维护的小节（脚本扫不到 AppConfig 的普通字段、以及已移出模型的全局多账号字段）：
+# 从原文件原样搬回，插入位置沿用「它后面那个标题」
+$manualAnchors = @(
+    '## 多账号切换 (全局配置，不分账号)',
+    '## 全局配置 (AppConfig，不分账号)'
+)
 $keep = @()
 $anchor = ''
 if (Test-Path -LiteralPath $outFile) {
     $old = [System.IO.File]::ReadAllLines($outFile, [System.Text.Encoding]::UTF8)
-    for ($i = 0; $i -lt $old.Count; $i++) {
-        if ($old[$i] -ne '## 全局配置 (AppConfig，不分账号)') { continue }
-        for ($j = $i; $j -lt $old.Count; $j++) {
-            if ($j -gt $i -and $old[$j].StartsWith('## ')) { $anchor = $old[$j]; break }
-            $keep += $old[$j]
+    foreach ($anchorTitle in $manualAnchors) {
+        for ($i = 0; $i -lt $old.Count; $i++) {
+            if ($old[$i] -ne $anchorTitle) { continue }
+            $keep += ''
+            for ($j = $i; $j -lt $old.Count; $j++) {
+                if ($j -gt $i -and $old[$j].StartsWith('## ')) { $anchor = $old[$j]; break }
+                $keep += $old[$j]
+            }
+            break
         }
-        break
     }
 }
 if ($keep.Count -gt 0) {

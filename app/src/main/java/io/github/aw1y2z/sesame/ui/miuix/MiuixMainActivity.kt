@@ -1047,6 +1047,12 @@ fun SettingsTab(activity: MiuixMainActivity) {
 
     SmallTitle(text = "功能设置")
     CardColumn {
+        // 多账号切换相关配置都是全局的，集中在这一处设置，不再分散到每个账号的独立设置里
+        ArrowPreference(
+            title = "多账号切换",
+            summary = "自动切号、账号顺序、常态保持账号等（全局生效）",
+            onClick = { context.startActivity(Intent(context, MiuixAccountSwitchActivity::class.java)) }
+        )
         ArrowPreference(
             title = "好友统计",
             onClick = { context.startActivity(Intent(context, MiuixFriendStatsActivity::class.java)) }

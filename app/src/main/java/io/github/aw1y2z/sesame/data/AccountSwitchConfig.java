@@ -310,6 +310,12 @@ public final class AccountSwitchConfig {
             return true;
         }
         /*
+         * 合并结果必须写回快照再落盘。
+         * <p>早先只把 merged 放进局部变量、却没写回 snapshot，导致新登录的账号从未真正写进
+         * config_common.json —— 界面上「基础设置」里的账号列表始终只有旧的那几个。
+         */
+        snapshot.setAccountSwitchAccounts(new ArrayList<>(merged.values()));
+        /*
          * 写盘前再读一次磁盘，只把账号列表这一项套到最新磁盘内容上。
          * 本方法只负责账号列表，却会把整份配置写回；
          * 不做这一步的话，用户刚在设置里改的「切号等待间隔」等会被这里的旧快照覆盖掉

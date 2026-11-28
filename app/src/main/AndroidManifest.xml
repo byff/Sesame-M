@@ -78,6 +78,11 @@
             android:resizeableActivity="true" />
 
         <activity
+            android:name=".ui.miuix.MiuixAccountSwitchActivity"
+            android:exported="false"
+            android:resizeableActivity="true" />
+
+        <activity
             android:name=".ui.miuix.MiuixExtensionsActivity"
             android:exported="false"
             android:resizeableActivity="true"

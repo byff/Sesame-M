@@ -146,7 +146,8 @@ public class ApplicationHook extends XposedModule {
      * method 由宿主侧按枚举校验，等价于固定动作。
      */
     private static final java.util.Set<String> CONTROL_OPS = new java.util.HashSet<>(java.util.Arrays.asList(
-            "restart", "reloadConfig", "execute", "status", "openProfile", "forestQuery", "walkPath"));
+            "restart", "reloadConfig", "execute", "status", "openProfile", "forestQuery", "walkPath",
+            "syncAccounts"));
     /** 森林查询允许的 method，与扩展页按钮一一对应 */
     private static final java.util.Set<String> FOREST_QUERY_METHODS = new java.util.HashSet<>(java.util.Arrays.asList(
             "getWateredItems", "getWateringItems", "getTreeItems", "getNewTreeItems",
@@ -163,6 +164,8 @@ public class ApplicationHook extends XposedModule {
     private static final long CONTROL_MIN_INTERVAL_EXECUTE = 60_000L;
     /** 跳转兜底是 App 侧 1.5s 后补发，窗口必须比它短，否则连点不同好友时兜底会被吞掉 */
     private static final long CONTROL_MIN_INTERVAL_OPEN_PROFILE = 1_000L;
+    /** 手动刷新账号列表：允许连续点，窗口只挡住狂刷 */
+    private static final long CONTROL_MIN_INTERVAL_SYNC_ACCOUNTS = 3_000L;
     private static final java.util.Map<String, java.util.concurrent.atomic.AtomicLong> lastControlAt =
             new java.util.concurrent.ConcurrentHashMap<>();
     /** 配对请求的频控：第三方刷这条 action 只会让我们多发定向广播 */
@@ -1643,6 +1646,8 @@ public class ApplicationHook extends XposedModule {
                 return CONTROL_MIN_INTERVAL_EXECUTE;
             case "openProfile":
                 return CONTROL_MIN_INTERVAL_OPEN_PROFILE;
+            case "syncAccounts":
+                return CONTROL_MIN_INTERVAL_SYNC_ACCOUNTS;
             case "restart":
             case "reloadConfig":
             default:
@@ -1698,6 +1703,11 @@ public class ApplicationHook extends XposedModule {
                 return null;
             case "status":
                 hook.replyStatus();
+                return null;
+            case "syncAccounts":
+                // 界面点「刷新账号列表」：让宿主进程重新读取支付宝登录账号并写回公共配置。
+                // 反射调用较重，必须丢到后台线程，不能在广播接收的主线程上跑。
+                AccountSwitchController.requestAccountSyncNow();
                 return null;
             case "openProfile":
                 openFriendProfile(context, userId);

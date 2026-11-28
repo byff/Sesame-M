@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -22,7 +23,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import io.github.aw1y2z.sesame.data.AccountSwitchConfig
+import io.github.aw1y2z.sesame.ui.HostBridge
 import io.github.aw1y2z.sesame.util.ToastUtil
+import kotlinx.coroutines.delay
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
@@ -33,6 +36,8 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
  * 账号切换顺序编辑页：上下移动调整顺序，保存后写回公共配置文件 config/config_common.json。
  *
  * 账号列表由支付宝侧读取并合并进配置文件（模块启动时自动同步），这里只负责调整顺序。
+ * 「刷新账号列表」会请宿主进程重新读取支付宝登录账号并合并进配置，
+ * 用于刚在支付宝里登录了新账号、想立刻看到的情况。
  */
 class MiuixAccountOrderActivity : MiuixBaseActivity() {
 
@@ -53,6 +58,34 @@ fun AccountOrderScreen(activity: MiuixAccountOrderActivity) {
             AccountSwitchConfig.getAccountSwitchAccounts().map { it.copy() }
         )
     }
+    var refreshing by remember { mutableStateOf(false) }
+
+    /*
+     * 刷新：宿主进程读支付宝账号需要走反射，耗时且只能在宿主进程里做，
+     * 这里发一条控制指令过去，再轮询配置文件等宿主写回。
+     */
+    LaunchedEffect(refreshing) {
+        if (!refreshing) {
+            return@LaunchedEffect
+        }
+        val before = AccountSwitchConfig.getAccountSwitchAccounts().map { it.uid }
+        HostBridge.send(context, "syncAccounts", null, null, false)
+        var done = false
+        for (attempt in 0 until 20) {
+            delay(500)
+            val now = AccountSwitchConfig.readFresh().accountSwitchAccounts.map { it.uid }
+            if (now != before) {
+                accounts = AccountSwitchConfig.readFresh().accountSwitchAccounts.map { it.copy() }
+                done = true
+                break
+            }
+        }
+        refreshing = false
+        ToastUtil.show(
+            context,
+            if (done) "账号列表已刷新" else "刷新超时，请确认支付宝正在运行"
+        )
+    }
 
     Scaffold(
         topBar = {
@@ -70,10 +103,20 @@ fun AccountOrderScreen(activity: MiuixAccountOrderActivity) {
                 .padding(padding)
                 .padding(horizontal = 16.dp, vertical = 8.dp)
         ) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(
+                    text = if (refreshing) "刷新中…" else "刷新账号列表",
+                    enabled = !refreshing,
+                    onClick = { refreshing = true }
+                )
+            }
             if (accounts.isEmpty()) {
                 SmallTitle(text = "暂无账号")
                 Text(
-                    text = "启动模块后会自动读取支付宝已登录账号；也可先在支付宝登录多个账号再回到本页。",
+                    text = "启动模块后会自动读取支付宝已登录账号；也可先在支付宝登录多个账号再回到本页，或点上方「刷新账号列表」。",
                     style = MiuixTheme.textStyles.body2,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary
                 )
