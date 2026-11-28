@@ -63,19 +63,24 @@ fun AccountOrderScreen(activity: MiuixAccountOrderActivity) {
     /*
      * 刷新：宿主进程读支付宝账号需要走反射，耗时且只能在宿主进程里做，
      * 这里发一条控制指令过去，再轮询配置文件等宿主写回。
+     *
+     * 比较基准用「页面上显示的这份列表」，而不是再读一次磁盘：
+     * 宿主可能早就把新账号同步进磁盘了，只是页面没重新读，
+     * 拿磁盘当基准会误判成"没变化"而白等一轮。
      */
     LaunchedEffect(refreshing) {
         if (!refreshing) {
             return@LaunchedEffect
         }
-        val before = AccountSwitchConfig.getAccountSwitchAccounts().map { it.uid }
+        val before = accounts.map { it.uid }
         HostBridge.send(context, "syncAccounts", null, null, false)
         var done = false
         for (attempt in 0 until 20) {
             delay(500)
-            val now = AccountSwitchConfig.readFresh().accountSwitchAccounts.map { it.uid }
+            val fresh = AccountSwitchConfig.readFresh().accountSwitchAccounts
+            val now = fresh.map { it.uid }
             if (now != before) {
-                accounts = AccountSwitchConfig.readFresh().accountSwitchAccounts.map { it.copy() }
+                accounts = fresh.map { it.copy() }
                 done = true
                 break
             }

@@ -12,6 +12,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -39,11 +40,23 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
  */
 class MiuixAccountSwitchActivity : MiuixBaseActivity() {
 
+    /**
+     * 每次回到前台都 +1，用来触发页面重算摘要。
+     * <p>账号顺序页保存完是 finish() 返回的，页面状态不会自动更新，
+     * 但公共配置文件里的账号列表已经变了。
+     */
+    val resumeTick = mutableIntStateOf(0)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setAppContent {
             AccountSwitchScreen(this)
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        resumeTick.intValue++
     }
 }
 
@@ -53,6 +66,8 @@ fun AccountSwitchScreen(activity: MiuixAccountSwitchActivity) {
     // 全局字段的值存在公共配置文件里，不是 Compose 状态：
     // 改完之后摘要不会自己刷新，用一个版本号触发重算
     var version by remember { mutableStateOf(0) }
+    // 读一下这个值：回到前台时账号列表可能已变，触发重算
+    activity.resumeTick.intValue
 
     Scaffold(
         topBar = {

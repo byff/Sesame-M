@@ -113,6 +113,8 @@ jobs:
           files: release-signed/*
           tag_name: ${{ steps.resolve.outputs.tag }}
           draft: false
-          append_body: true
+          # 正文由本工作流从仓库里的 UTF-8 文件拼出来并整体覆盖：
+          # 追加（append_body）会让人工预置的正文与 CI 拼出来的正文重复
+          append_body: false
           generate_release_notes: true
           body_path: release-notes.md

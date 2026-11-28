@@ -350,7 +350,8 @@ internal fun fieldMatchesSearch(query: String, field: ModelField<*>): Boolean {
 
 /** 账号顺序行的摘要：显示账号个数与前两个账号名 */
 internal fun accountOrderSummary(): String {
-    val accounts = AccountSwitchConfig.getAccountSwitchAccounts()
+    // 用 readFresh 绕开 1 秒读缓存：从账号顺序页保存完返回时，磁盘内容可能刚变
+    val accounts = AccountSwitchConfig.readFresh().accountSwitchAccounts
     if (accounts.isEmpty()) {
         return "暂无账号"
     }
