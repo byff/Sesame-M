@@ -608,6 +608,19 @@ public class ApplicationHook extends XposedModule {
                                         Log.record("自动切号中，暂停任务执行");
                                         return;
                                     }
+                                    /*
+                                     * 轮次等待期间：常态保持账号已经切回来了，
+                                     * 要停着等「切号轮次间隔」再开始下一轮 ——
+                                     * 这里不能让它按执行间隔自己跑一轮，
+                                     * 否则「切回常态账号 → 又执行一次任务」。
+                                     * <p>这一轮不跑任务，但要排上下一跳，
+                                     * 否则任务链会断。
+                                     */
+                                    if (AccountSwitchController.isRoundWaiting()) {
+                                        Log.record("轮次等待中，暂不执行任务");
+                                        execDelayedHandler(checkInterval > 0 ? checkInterval : FALLBACK_INTERVAL);
+                                        return;
+                                    }
                                     Log.record("应用版本：" + alipayVersion.getVersionString());
                                     Log.record("模块版本：" + modelVersion);
                                     Log.record("开始执行");

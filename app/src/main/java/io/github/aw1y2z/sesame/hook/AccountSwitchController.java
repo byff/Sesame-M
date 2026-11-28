@@ -188,6 +188,15 @@ public final class AccountSwitchController {
     }
 
     /**
+     * 是否处于「轮次等待」中：一轮已走完并切回了常态保持账号，
+     * 正等着「切号轮次间隔」再开始下一轮。
+     * <p>等待期间常态保持账号**不执行任务** —— 切回来就再跑一轮不是期望的行为。
+     */
+    public static boolean isRoundWaiting() {
+        return awaitingResume;
+    }
+
+    /**
      * 账号开始运行（没有换账号）：刷新运行起点即可。
      * <p>驻留计时与轮次等待状态**不能**在这里重置：
      * 重载配置（{@code runInit}）也会走到这里，那不是换账号。
@@ -631,41 +640,33 @@ public final class AccountSwitchController {
                 // checkInterval 的值是毫秒（MultiplyIntegerModelField 带 60000 倍率），换算成分钟
                 roundIntervalMinutes = Math.max(BaseModel.getCheckInterval().getValue() / 60_000L, 1L);
             }
+            /*
+             * 本轮走完：立刻切回**常态保持账号**，然后等轮次间隔再开始下一轮。
+             *
+             * <p>切回常态账号这一步必须**立即执行**，不能推到轮次等待结束：
+             * 之前是先等完轮次间隔才切，切过去后 initialize(uid, true) 会立刻重跑一轮，
+             * 于是「切回账号1 → 账号1 又执行一次任务」，
+             * 而用户期望的是切回常态账号后**停着**等间隔，间隔到了才开始下一轮。
+             *
+             * <p>所以这里：切号目标改成常态保持账号 → 切过去 → 不启动任务（startMain=false）
+             * → 进入轮次等待 → 间隔到了再启动下一轮。
+             */
             if (roundEnd) {
                 // 本轮刚走完：记下这个时刻作为轮次间隔的计时起点
                 if (roundFinishedAt <= 0) {
                     roundFinishedAt = System.currentTimeMillis();
                 }
-                long waitRemainMillis = roundFinishedAt + roundIntervalMinutes * 60_000L
-                        - System.currentTimeMillis();
-                if (waitRemainMillis > 0) {
-                    awaitingResume = true;
-                    /*
-                     * 下一轮从「第一个可用账号」重新开始：
-                     * 常态保持账号是每一轮的收尾，下一轮再从头走一遍，
-                     * 每个账号在一轮里恰好被访问一次，收尾始终是常态保持账号。
-                     */
-                    pendingSwitchUid = firstAvailableUid(effective, hostMap);
-                    roundWaitLastLogAt = System.currentTimeMillis();
-                    resumeAt = System.currentTimeMillis() + waitRemainMillis;
-                    // 本轮已走完：清空访问记录，下一轮从头开始
-                    roundVisited.clear();
-                    completed = true;
-                    Log.record("自动切号🔄️ 本轮所有账号已执行完，进入轮次等待，约 "
-                            + ((waitRemainMillis + 59_999L) / 60_000L) + " 分钟后从 "
-                            + label(pendingSwitchUid) + " 开始下一轮");
-                    return;
+                // 切号目标改成常态保持账号
+                int holdTargetIndex = holdIndex;
+                if (holdTargetIndex >= 0 && holdTargetIndex != targetIndex) {
+                    target = effective.get(holdTargetIndex);
+                    targetIndex = holdTargetIndex;
+                    loginId = resolveLoginId(target, hostMap);
+                    sameAccount = target.getUid().equals(currentUid);
                 }
-                Log.record("自动切号🔄️ 轮次等待时间已到，直接切换");
-            }
-
-            if (roundEnd) {
-                // 本轮走完：清空访问记录，下一轮重新开始
-                roundVisited.clear();
-                roundFinishedAt = 0L;
             }
             Log.record("自动切号🔄️ 开始切换: " + label(currentUid) + " -> " + label(target)
-                    + (roundEnd ? "（本轮所有账号已执行完）" : ""));
+                    + (roundEnd ? "（本轮所有账号已执行完，切回常态保持账号）" : ""));
             paused = true;
             stoppedTasks = true;
             currentHost.pause();
@@ -696,12 +697,32 @@ public final class AccountSwitchController {
             // 先记驻留起点，再初始化：初始化里会回调 onRunResumed，
             // 顺序反了会被当成「外部换了账号」，把驻留计时清零
             onAccountSwitched(target.getUid());
-            completed = currentHost.initialize(target.getUid(), true);
+            /*
+             * 一轮走完切回常态账号后**不要立刻跑任务**：
+             * 常态账号先停着，等轮次间隔到了再开始下一轮。
+             * 用 startMain=false 只加载配置、不启动任务。
+             */
+            completed = currentHost.initialize(target.getUid(), !roundEnd);
             if (!completed) {
                 Log.record("自动切号🔄️ 切换后加载账号失败");
             }
             Log.record("自动切号🔄️ 已切换到账号: " + label(target)
                     + (roundEnd ? "（本轮所有账号已执行完）" : ""));
+            if (roundEnd) {
+                // 本轮走完：清空访问记录，进入轮次等待，间隔到了再开始下一轮
+                roundVisited.clear();
+                long waitRemainMillis = roundFinishedAt + roundIntervalMinutes * 60_000L
+                        - System.currentTimeMillis();
+                if (waitRemainMillis > 0) {
+                    awaitingResume = true;
+                    pendingSwitchUid = firstAvailableUid(effective, hostMap);
+                    roundWaitLastLogAt = System.currentTimeMillis();
+                    resumeAt = System.currentTimeMillis() + waitRemainMillis;
+                    Log.record("自动切号🔄️ 本轮所有账号已执行完，已切回常态保持账号 "
+                            + label(target) + "，等待约 "
+                            + ((waitRemainMillis + 59_999L) / 60_000L) + " 分钟后开始下一轮");
+                }
+            }
         } catch (Throwable t) {
             Log.printStackTrace(TAG + "#切换账号失败", t);
         } finally {
