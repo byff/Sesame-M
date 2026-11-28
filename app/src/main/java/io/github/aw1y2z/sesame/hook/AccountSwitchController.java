@@ -530,28 +530,22 @@ public final class AccountSwitchController {
                     && !StringUtil.isEmpty(resolveLoginId(holdAccount, hostMap));
 
             /*
-             * 切号目标的选取规则（用户期望）：
-             *   账号A 跑完本轮全部任务 → 切到账号B → 账号B 跑完 → 切回预设账号（常态保持账号）。
+            /*
+             * 切号顺序：**完全按配置里的账号顺序**。
+             * <p>常态保持账号就待在它配置的位置，不把它挪到末尾 ——
+             * 挪走会让访问顺序与用户配置不一致
+             * （配置 [账号1, 账号3(常态), 账号5] 时会变成 账号1 → 账号5 → 账号3）。
              *
-             * 原实现按「列表原始顺序 + 下标+1」取下一个，但常态保持账号在列表里的位置是任意的：
-             * 若它排在列表中间，走到它时会被当成一轮的收尾，导致后面的账号一轮里跑不到；
-             * 若它排在列表前面，则要绕回去才能再到它，一轮里它会被访问两次。
-             * 两种情况都会表现为「切号来回横跳、频繁切换」。
-             *
-             * 现在改为构造「生效顺序」：把常态保持账号挪到列表末尾，
-             *   [账号1, 账号2, ..., 常态保持账号]
-             * 一轮必然以常态保持账号收尾，之后从第一个账号开始下一轮，
-             * 与上面的期望完全一致。保持账号不可用时退化为原始顺序。
+             * 一轮 = 从列表第一个账号起，依次访问后面的账号，绕回起点即走完；
+             * 其中「当前账号就是常态保持账号、且所有账号都访问过了」的那一刻，这一轮收尾。
              */
-            List<AccountSwitchConfig.Account> effective =
-                    buildEffectiveOrder(ordered, holdAccount, holdUsable);
+            List<AccountSwitchConfig.Account> effective = ordered;
             if (effective.size() < 2) {
                 nextAttemptAt = System.currentTimeMillis() + FAILED_RETRY_MILLIS;
                 return;
             }
             int currentIndex = indexOf(effective, currentUid);
             // 常态保持账号在生效顺序里的下标：轮次收尾与下一轮起点都以它为基准
-            int holdIndex2 = holdUsable ? indexOf(effective, holdAccount.getUid()) : -1;
             // 目标起点：当前账号之后的下一个账号
             int start = currentIndex >= 0 ? currentIndex + 1 : 0;
 
@@ -582,29 +576,17 @@ public final class AccountSwitchController {
             }
 
             /*
-             * 一轮的边界：
-             *   - 有常态保持账号：一轮以「切入常态保持账号」结束；
-             *   - 没有常态保持账号（未配置/本地无登录记录）：一轮以「列表走完回到开头」结束。
+            /*
+             * 本轮是否走完：**当前账号就是常态保持账号**，且本轮已访问过所有可用账号。
              *
-             * 注意区分：只有「切过去的目标**就是**常态保持账号」才算 arrivingHold。
-             * 列表回绕时目标可能只是列表的第一个账号，那不是保持账号，
-             * 不能给它打上「一轮收尾」的标记（否则会被误当成保持账号进入轮次等待）。
-             */
-            /*
-             * 轮次是否在这一步结束：目标就是锚点账号，说明已经把其余账号都轮过一遍了。
-             * <p>不按「切到常态保持账号」判定：那样定时切号只跑一个账号就算一轮，
-             * 而实际一轮应当是所有账号都执行到。
-             */
-            /*
-             * 轮次是否在这一步结束：目标就是锚点账号，说明已经把其余账号都访问过了。
-             * <p>注意这里用的是**改写前**的目标下标：锚点是本轮起点，
-             * 绕回锚点 = 这一轮把其余账号都走完了。
-             */
-            /*
-             * 本轮是否走完：目标是常态保持账号，且本轮已访问过所有可用账号。
-             * <p>用「已访问集合」判定而不是按下标推算：
-             * 只有「所有账号都轮到过」才算一轮走完，
-             * 这样无论从哪个账号启动、中途账号是否失效，访问进度都不会算错。
+             * <p>注意判定的主体是「当前账号」而不是「切过去的那个目标」：
+             * 常态保持账号要等它自己这一轮的任务跑完，这一轮才算收尾。
+             * 早先按「目标是常态账号」判定，导致一轮走完时直接进入轮次等待、
+             * **根本没执行切号** —— 账号停在最后跑完的那个账号上，
+             * 表现就是「本轮结束了却没有切回常态保持账号」。
+             *
+             * <p>用「已访问集合」而不是按下标推算：无论从哪个账号启动、
+             * 中途账号是否失效，访问进度都不会算错。
              */
             Set<String> available = new HashSet<>();
             for (AccountSwitchConfig.Account account : effective) {
@@ -616,15 +598,15 @@ public final class AccountSwitchController {
                 }
             }
             /*
-             * 判定时要把**当前账号**也算上：当前账号马上要切走，
-             * 它这一轮的任务已经跑完，属于本轮已访问。
+             * 判定时把当前账号也算上：它这一轮的任务已经跑完，属于本轮已访问。
              * 不算上的话，最后一个账号永远凑不齐「已访问全部账号」，
              * 一轮永远走不完、轮次间隔永远不触发。
              */
             Set<String> visitedNow = new HashSet<>(roundVisited);
             visitedNow.add(currentUid);
             boolean roundEnd = holdUsable
-                    && isSameAccount(target, holdAccount)
+                    && holdAccount != null
+                    && holdAccount.getUid().equals(currentUid)
                     && visitedNow.containsAll(available);
 
             String loginId = resolveLoginId(target, hostMap);
@@ -1122,34 +1104,6 @@ public final class AccountSwitchController {
             }
         }
         return currentUid;
-    }
-
-    /**
-     * 构造「生效的切号顺序」。
-     * <p>常态保持账号可用时把它挪到末尾，其余账号保持原相对顺序：
-     * 一轮必然以常态保持账号收尾，之后从第一个账号开始下一轮。
-     * 保持账号不可用（未配置或本地无登录记录）时退化为原始顺序。
-     */
-    private static List<AccountSwitchConfig.Account> buildEffectiveOrder(
-            List<AccountSwitchConfig.Account> ordered,
-            AccountSwitchConfig.Account holdAccount,
-            boolean holdUsable) {
-        List<AccountSwitchConfig.Account> result = new ArrayList<>();
-        if (ordered == null || ordered.isEmpty()) {
-            return result;
-        }
-        if (!holdUsable || holdAccount == null) {
-            result.addAll(ordered);
-            return result;
-        }
-        for (AccountSwitchConfig.Account account : ordered) {
-            if (account == null || isSameAccount(account, holdAccount)) {
-                continue;
-            }
-            result.add(account);
-        }
-        result.add(holdAccount);
-        return result;
     }
 
     /** 切号被拒时的日志：1014 说明目标账号凭证失效，需要用户手动登录一次 */

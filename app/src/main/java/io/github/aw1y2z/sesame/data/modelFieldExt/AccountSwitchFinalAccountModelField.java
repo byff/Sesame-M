@@ -56,7 +56,10 @@ public class AccountSwitchFinalAccountModelField extends ChoiceModelField implem
     @Override
     @JsonIgnore
     public String getConfigValue() {
-        return String.valueOf(selectedIndex());
+        // 用 uid 而不是下标：账号列表会变（新增/删除账号、支付宝侧登录了新账号），
+        // 下标会指向别的账号，常态保持账号就悄悄变成了另一个账号。
+        String uid = AccountSwitchConfig.getAccountSwitchFinalAccountUid();
+        return StringUtil.isEmpty(uid) ? "" : uid;
     }
 
     @Override
@@ -66,7 +69,7 @@ public class AccountSwitchFinalAccountModelField extends ChoiceModelField implem
             return;
         }
         try {
-            applyGlobalValue(Integer.parseInt(configValue.trim()));
+            applyGlobalValue(configValue.trim());
         } catch (Throwable t) {
             Log.printStackTrace("AccountSwitchFinalAccountModelField#保存常态保持账号失败", t);
         }
@@ -87,23 +90,41 @@ public class AccountSwitchFinalAccountModelField extends ChoiceModelField implem
             super.setObjectValue(selectedIndex());
             return;
         }
-        int index;
-        try {
-            index = Integer.parseInt(String.valueOf(value).trim());
-        } catch (Exception ignored) {
+        String raw = String.valueOf(value).trim();
+        if (StringUtil.isEmpty(raw)) {
             super.setObjectValue(selectedIndex());
             return;
         }
-        List<String> uids = optionUids;
-        if (index >= 0 && index < uids.size()) {
-            AccountSwitchConfig.setAccountSwitchFinalAccountUid(uids.get(index));
-        } else {
-            // 索引越界（账号列表在界面打开后变短）：按磁盘最新列表重新定位
-            List<AccountSwitchConfig.Account> accounts =
-                    AccountSwitchConfig.getAccountSwitchAccounts();
-            if (index >= 0 && index < accounts.size()) {
-                AccountSwitchConfig.setAccountSwitchFinalAccountUid(accounts.get(index).getUid());
+        /*
+         * 值是账号 uid，直接按 uid 保存 —— 账号列表变化不会让常态保持账号指错人。
+         * 兼容旧数据：老版本存的是下标，若这个「uid」在账号列表里找不到，
+         * 但它又是个纯数字，就当作旧下标处理（按当前列表重新定位）。
+         */
+        List<AccountSwitchConfig.Account> accounts =
+                AccountSwitchConfig.getAccountSwitchAccounts();
+        boolean found = false;
+        for (AccountSwitchConfig.Account account : accounts) {
+            if (account != null && raw.equals(account.getUid())) {
+                found = true;
+                break;
             }
+        }
+        if (!found && raw.chars().allMatch(Character::isDigit)) {
+            try {
+                int index = Integer.parseInt(raw);
+                if (index >= 0 && index < accounts.size()
+                        && accounts.get(index) != null) {
+                    AccountSwitchConfig.setAccountSwitchFinalAccountUid(
+                            accounts.get(index).getUid());
+                    super.setObjectValue(selectedIndex());
+                    return;
+                }
+            } catch (Exception ignored) {
+                // 不是合法下标，按 uid 处理
+            }
+        }
+        if (found) {
+            AccountSwitchConfig.setAccountSwitchFinalAccountUid(raw);
         }
         super.setObjectValue(selectedIndex());
     }
