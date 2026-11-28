@@ -287,8 +287,13 @@ public final class AccountSwitchController {
     public static void requestAccountSyncNow() {
         ExecutorService executor = syncExecutor;
         if (executor == null) {
-            // 调度器还没起来（宿主刚启动）：退化为直接跑一次，仍在后台线程
-            syncAccountsFromHost();
+            // 调度器还没起来（宿主刚启动）：另起一条线程跑，
+            // 反射调用较重，绝不能在调用方（广播接收的主线程）上直接执行
+            try {
+                new Thread(AccountSwitchController::syncAccountsFromHost, "sesame-account-sync").start();
+            } catch (Throwable t) {
+                Log.printStackTrace(TAG + "#提交账号同步失败", t);
+            }
             return;
         }
         try {
