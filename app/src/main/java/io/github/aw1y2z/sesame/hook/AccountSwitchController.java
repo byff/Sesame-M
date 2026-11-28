@@ -26,6 +26,7 @@ import io.github.aw1y2z.sesame.util.TimeUtil;
  *
  * 触发条件：开关开启 + 当前账号任务全部结束（不含未来到点的定时子任务）
  *          + 当前账号运行时长达到「切号等待间隔」。
+ * 轮次：一轮 = 所有可用账号各访问一次，收尾在常态保持账号上；走完后等轮次间隔再开始下一轮。
  * 切号顺序：按 config_common.json 中的账号列表顺序循环；
  *          列表走完（回到开头）时，如果配置了「常态保持账号」，先切到该账号执行一次，作为一轮结束；
  *          轮次等待从切入常态保持账号时开始计时，期间该账号继续按自己的执行间隔跑任务但不切号，
@@ -116,14 +117,14 @@ public final class AccountSwitchController {
     private static volatile long lastAccountSync;
     private static volatile long lastSwitchEndAt;
     /**
-     * 本轮（一个完整轮次）的起点账号：这一轮从它开始，依次访问其余账号，
-     * 绕回它时这一轮才算走完。
-     * <p>为空表示本轮尚未开始。
-     * <p>用「锚点」而不是「切到常态保持账号」来判定轮次结束，
-     * 是为了让定时切号也能覆盖整轮：定时到点后把锚点设成常态保持账号，
-     * 后续就会依次走完其余账号再绕回来，一轮里所有账号都执行到了。
+     * 本轮已访问过的账号 uid 集合。
+     * <p>一轮 = 把所有可用账号各访问一次。用集合记录进度，
+     * 比「锚点 + 下标推算」稳得多：启动时停在哪个账号、
+     * 中途账号登录记录失效、列表顺序调整，都不会把访问进度算错。
+     * <p>切走账号 X 说明 X 这一轮的任务已跑完，X 计入本集合；
+     * 目标是常态保持账号、且本集合已覆盖所有可用账号时，这一轮才算走完。
      */
-    private static volatile String roundAnchorUid;
+    private static final Set<String> roundVisited = new HashSet<>();
     /**
      * 本轮所有账号都跑完的时刻：轮次间隔从这里起算。
      * <p>0 表示本轮还没走完。轮次间隔的语义是「所有账号轮完一圈后等多久」，
@@ -304,7 +305,7 @@ public final class AccountSwitchController {
                     pendingSwitchUid = null;
                     roundWaitLastLogAt = 0;
                     // 轮次状态一并复位：重新开启时从当前账号重新起算一轮
-                    roundAnchorUid = null;
+                    roundVisited.clear();
                     roundFinishedAt = 0L;
                     currentHost.resume();
                 }
@@ -549,34 +550,8 @@ public final class AccountSwitchController {
                 return;
             }
             int currentIndex = indexOf(effective, currentUid);
-            /*
-             * 轮次锚点：一轮从锚点账号开始，依次访问其余账号，绕回锚点才走完。
-             * <p>锚点必须是列表里**可用**的账号：锚点失效后就永远绕不回去，
-             * 轮次永远不结束、轮次间隔永远不触发。
-             * 失效时重设为第一个可用账号（新一轮的起点），
-             * 不能重设为当前账号 —— 那会立刻判定「本轮已走完」。
-             */
-            int anchorIndex = indexOf(effective, roundAnchorUid);
-            if (anchorIndex < 0
-                    || StringUtil.isEmpty(resolveLoginId(effective.get(anchorIndex), hostMap))) {
-                /*
-                 * 锚点无效（还没起算，或原锚点账号登录记录被清掉了）：重新起算一轮。
-                 * <p>优先取**当前账号**而不是列表第一个：
-                 * 启动时若正好坐在常态保持账号（列表末尾），按列表第一个起算的话，
-                 * 第一次切号就绕回锚点 → 一轮还没走完就开始等轮次间隔，
-                 * 其余账号被白白推迟一个间隔。
-                 */
-                String newAnchor = null;
-                if (currentIndex >= 0
-                        && !StringUtil.isEmpty(resolveLoginId(effective.get(currentIndex), hostMap))) {
-                    newAnchor = effective.get(currentIndex).getUid();
-                }
-                if (StringUtil.isEmpty(newAnchor)) {
-                    newAnchor = firstAvailableUid(effective, hostMap);
-                }
-                roundAnchorUid = newAnchor;
-                anchorIndex = indexOf(effective, roundAnchorUid);
-            }
+            // 常态保持账号在生效顺序里的下标：轮次收尾与下一轮起点都以它为基准
+            int holdIndex2 = holdUsable ? indexOf(effective, holdAccount.getUid()) : -1;
             // 目标起点：当前账号之后的下一个账号
             int start = currentIndex >= 0 ? currentIndex + 1 : 0;
 
@@ -620,24 +595,37 @@ public final class AccountSwitchController {
              * <p>不按「切到常态保持账号」判定：那样定时切号只跑一个账号就算一轮，
              * 而实际一轮应当是所有账号都执行到。
              */
-            boolean roundEnd = anchorIndex >= 0 && targetIndex == anchorIndex;
-            if (roundEnd) {
-                /*
-                 * 本轮走完，下一轮从「第一个可用账号」重新开始，
-                 * 这样访问顺序固定成「账号1 → 账号2 → … → 常态保持账号 → 账号1」，
-                 * 每个账号在一轮里恰好被访问一次，且收尾始终是常态保持账号。
-                 * <p>定时切号那一轮的锚点是常态保持账号，
-                 * 走完后回到第一个账号，常态访问顺序就恢复了。
-                 */
-                String nextStart = firstAvailableUid(effective, hostMap);
-                if (!StringUtil.isEmpty(nextStart)) {
-                    int nextIndex = indexOf(effective, nextStart);
-                    if (nextIndex >= 0) {
-                        target = effective.get(nextIndex);
-                        targetIndex = nextIndex;
-                    }
+            /*
+             * 轮次是否在这一步结束：目标就是锚点账号，说明已经把其余账号都访问过了。
+             * <p>注意这里用的是**改写前**的目标下标：锚点是本轮起点，
+             * 绕回锚点 = 这一轮把其余账号都走完了。
+             */
+            /*
+             * 本轮是否走完：目标是常态保持账号，且本轮已访问过所有可用账号。
+             * <p>用「已访问集合」判定而不是按下标推算：
+             * 只有「所有账号都轮到过」才算一轮走完，
+             * 这样无论从哪个账号启动、中途账号是否失效，访问进度都不会算错。
+             */
+            Set<String> available = new HashSet<>();
+            for (AccountSwitchConfig.Account account : effective) {
+                if (account == null || StringUtil.isEmpty(account.getUid())) {
+                    continue;
+                }
+                if (!StringUtil.isEmpty(resolveLoginId(account, hostMap))) {
+                    available.add(account.getUid());
                 }
             }
+            /*
+             * 判定时要把**当前账号**也算上：当前账号马上要切走，
+             * 它这一轮的任务已经跑完，属于本轮已访问。
+             * 不算上的话，最后一个账号永远凑不齐「已访问全部账号」，
+             * 一轮永远走不完、轮次间隔永远不触发。
+             */
+            Set<String> visitedNow = new HashSet<>(roundVisited);
+            visitedNow.add(currentUid);
+            boolean roundEnd = holdUsable
+                    && isSameAccount(target, holdAccount)
+                    && visitedNow.containsAll(available);
 
             String loginId = resolveLoginId(target, hostMap);
             boolean sameAccount = target.getUid().equals(currentUid);
@@ -671,15 +659,15 @@ public final class AccountSwitchController {
                 if (waitRemainMillis > 0) {
                     awaitingResume = true;
                     /*
-                     * 下一轮从「第一个可用账号」开始：访问顺序固定成
-                     * 「账号1 → 账号2 → … → 常态保持账号 → 账号1」，
-                     * 每个账号在一轮里恰好被访问一次。
+                     * 下一轮从「第一个可用账号」重新开始：
+                     * 常态保持账号是每一轮的收尾，下一轮再从头走一遍，
+                     * 每个账号在一轮里恰好被访问一次，收尾始终是常态保持账号。
                      */
                     pendingSwitchUid = firstAvailableUid(effective, hostMap);
                     roundWaitLastLogAt = System.currentTimeMillis();
                     resumeAt = System.currentTimeMillis() + waitRemainMillis;
-                    // 本轮已走完：锚点重设为下一个起点，避免下面那段重复处理
-                    roundAnchorUid = pendingSwitchUid;
+                    // 本轮已走完：清空访问记录，下一轮从头开始
+                    roundVisited.clear();
                     completed = true;
                     Log.record("自动切号🔄️ 本轮所有账号已执行完，进入轮次等待，约 "
                             + ((waitRemainMillis + 59_999L) / 60_000L) + " 分钟后从 "
@@ -690,12 +678,8 @@ public final class AccountSwitchController {
             }
 
             if (roundEnd) {
-                /*
-                 * 本轮走完：下一轮从第一个可用账号重新开始，锚点随之重设。
-                 * 访问顺序固定成「账号1 → 账号2 → … → 常态保持账号 → 账号1」，
-                 * 每个账号在一轮里恰好被访问一次，收尾始终是常态保持账号。
-                 */
-                roundAnchorUid = target.getUid();
+                // 本轮走完：清空访问记录，下一轮重新开始
+                roundVisited.clear();
                 roundFinishedAt = 0L;
             }
             Log.record("自动切号🔄️ 开始切换: " + label(currentUid) + " -> " + label(target)
@@ -725,6 +709,8 @@ public final class AccountSwitchController {
             if (scheduledSwitchAt <= 0) {
                 paused = false;
             }
+            // 当前账号这一轮的任务已跑完，计入本轮已访问
+            roundVisited.add(currentUid);
             // 先记驻留起点，再初始化：初始化里会回调 onRunResumed，
             // 顺序反了会被当成「外部换了账号」，把驻留计时清零
             onAccountSwitched(target.getUid());
@@ -818,8 +804,8 @@ public final class AccountSwitchController {
             onAccountSwitched(targetUid);
             completed = currentHost.initialize(targetUid, true);
             if (completed) {
-                // 新一轮开始：锚点设为切过去的这个账号，它就是这一轮的起点
-                roundAnchorUid = targetUid;
+                // 新一轮开始：清空访问记录
+                roundVisited.clear();
                 roundFinishedAt = 0L;
                 Log.record("自动切号🔄️ 已切换到账号: " + label(targetUid) + "，开始新一轮");
             } else {
@@ -846,14 +832,22 @@ public final class AccountSwitchController {
                      * 这里把等待重新排上，等 failedRetryMillis 后再试一次。
                      *
                      * pendingSwitchUid 在进入 resumeSwitch 前被清空了，
-                     * 这里从 roundAnchorUid 还原 —— 它就是这一轮要切过去的账号。
+                     * 这里从账号配置里还原目标 —— 它就是这一轮要切过去的账号。
                      */
                     long retryDelay = failedRetryMillis();
                     awaitingResume = true;
                     resumeAt = System.currentTimeMillis() + retryDelay;
                     roundWaitLastLogAt = System.currentTimeMillis();
                     if (StringUtil.isEmpty(pendingSwitchUid)) {
-                        pendingSwitchUid = roundAnchorUid;
+                        // 重试目标：账号列表里的第一个账号（登录记录在重试时再校验）
+                        // 重试目标：账号列表里的第一个账号（登录记录在重试时再校验）
+                        for (AccountSwitchConfig.Account account :
+                                AccountSwitchConfig.getAccountSwitchAccounts()) {
+                            if (account != null && !StringUtil.isEmpty(account.getUid())) {
+                                pendingSwitchUid = account.getUid();
+                                break;
+                            }
+                        }
                     }
                     Log.record("自动切号🔄️ 轮次切号失败，" + (retryDelay / 60_000L)
                             + " 分钟后重试");
@@ -996,11 +990,11 @@ public final class AccountSwitchController {
             }
             paused = false;
             /*
-             * 把轮次锚点设为常态保持账号：定时切号后这一轮会从这里出发，
+             * 清空本轮访问记录：定时切号后这一轮会从常态保持账号出发，
              * 依次走完其余账号再绕回来 —— 一轮里所有账号都执行到，
              * 而不是只跑常态保持账号一个就结束。
              */
-            roundAnchorUid = targetUid;
+            roundVisited.clear();
             roundFinishedAt = 0L;
             onAccountSwitched(targetUid);
             completed = currentHost.initialize(targetUid, true);
@@ -1087,7 +1081,7 @@ public final class AccountSwitchController {
     }
 
     /**
-     * 列表里第一个可用的账号 uid：新一轮的起点。
+     * 列表里第一个可用的账号 uid。
      * <p>「可用」= 在支付宝本地还有登录记录。取不到返回 null。
      */
     private static String firstAvailableUid(List<AccountSwitchConfig.Account> effective,
@@ -1104,6 +1098,30 @@ public final class AccountSwitchController {
             }
         }
         return null;
+    }
+
+    /**
+     * 下一轮的起点账号：给定下标之后的第一个可用账号（循环查找）。
+     * <p>用于「常态保持账号收尾后，紧接着切到下一个账号继续这一轮」。
+     */
+    private static String resolveNextRoundUid(List<AccountSwitchConfig.Account> effective,
+                                              int fromIndex,
+                                              Map<String, AlipayAccountSwitchBridge.HostAccount> hostMap,
+                                              String currentUid) {
+        if (effective == null || effective.isEmpty()) {
+            return currentUid;
+        }
+        for (int step = 1; step <= effective.size(); step++) {
+            int index = (fromIndex + step) % effective.size();
+            AccountSwitchConfig.Account candidate = effective.get(index);
+            if (candidate == null || StringUtil.isEmpty(candidate.getUid())) {
+                continue;
+            }
+            if (!StringUtil.isEmpty(resolveLoginId(candidate, hostMap))) {
+                return candidate.getUid();
+            }
+        }
+        return currentUid;
     }
 
     /**
